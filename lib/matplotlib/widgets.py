@@ -21,11 +21,15 @@ import numpy as np
 
 import matplotlib as mpl
 from . import (_api, _docstring, backend_tools, cbook, collections, colors,
-               text as mtext, ticker, transforms)
+               text as mtext, ticker, transforms, colormaps)
 from .lines import Line2D
 from .patches import Rectangle, Ellipse, Polygon
 from .transforms import TransformedPatchPath, Affine2D
+from typing import Literal, override
 
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from .typing import ColorType
 
 class LockDraw:
     """
@@ -1390,7 +1394,6 @@ class TextBox(AxesWidget):
             The horizontal location of the text.
         """
         super().__init__(ax)
-
         self._text_position = _api.check_getitem(
             {"left": 0.05, "center": 0.5, "right": 0.95},
             textalignment=textalignment)
@@ -2910,8 +2913,13 @@ class SpanSelector(_SelectorWidget):
 
     def _set_active_handle(self, event):
         """Set active handle based on the location of the mouse event."""
+        handles = self._edge_handles
+        # No handles available case
+        if handles is None:
+            self._active_handle = None
+            return
         # Note: event.xdata/ydata in data coordinates, event.x/y in pixels
-        e_idx, e_dist = self._edge_handles.closest(event.x, event.y)
+        e_idx, e_dist = handles.closest(event.x, event.y)
 
         # Prioritise center handle over other handles
         # Use 'C' to match the notation used in the RectangleSelector
@@ -2974,8 +2982,10 @@ class SpanSelector(_SelectorWidget):
             extents = tuple(self._snap(extents, self.snap_values))
         self._draw_shape(*extents)
         if self._interactive:
+            handles = self._edge_handles
             # Update displayed handles
-            self._edge_handles.set_data(self.extents)
+            if handles is not None:
+                handles.set_data(self.extents)
         self.set_visible(self._visible)
         self.update()
 
@@ -3155,7 +3165,7 @@ class ToolHandles:
         return min_index, dist[min_index]
 
 
-class NSpanSelector(SpanSelector):
+class SpanSelectorN(SpanSelector):
     """
     A modified version of SpanSelector that allows for multiple selections.
     Visually select multiple min/max ranges on a single axis and call a singular
@@ -3292,7 +3302,7 @@ class NSpanSelector(SpanSelector):
         handle_props=None,
         state_modifier_keys=None,
         snap_values=None,
-        colors=mpl.colormaps.get("tab10"),
+        colors=colormaps.get("tab10"),
     ) -> None:
         # Define N
         self._N = N
@@ -3357,6 +3367,17 @@ class NSpanSelector(SpanSelector):
                 else:
                     # Remove positions from the end, by default invisible.
                     nPositions = positions[:N]
+            else:
+                # If doesn't exist, create a set of default positions
+                # equally spaced in the axis bounds.
+                if self.direction == 'horizontal':
+                    ax_bounds = self.ax.get_xbound()
+                else:
+                    ax_bounds = self.ax.get_ybound()
+                nPositions = np.linspace(
+                    ax_bounds[0], ax_bounds[1], N, endpoint=False
+                ) + (ax_bounds[1] - ax_bounds[0]) / (2 * N)
+
             # Reset the handles.
             self._edge_handles.remove()
             self._edge_handles = ToolLineHandles(
@@ -3369,121 +3390,199 @@ class NSpanSelector(SpanSelector):
             # Finally update the number of selections.
             self._N = N
 
-    def color_spans(self, rect_colors, handle_colors=None) -> None:
+    def color_spans(self,
+                    rect_colors: list["ColorType"] | "ColorType" | colors.Colormap, 
+                    handle_colors: list["ColorType"] | "ColorType" | colors.Colormap | None = None,
+                    dim: float = 0.5) -> None:
         """
         Set the colors of the rectangle spans and their edge handles.
 
         Parameters
         ----------
-        colors : list[:mpltype:`color`] | :mpltype:`color` | Colormap
+        colors : list[:mpltype:`color`] | :mpltype:`color` | ListedColormap
             A general mapping of colors to the spans.
             If a list is provided, it should match the length of N.
             If a single color is provided, all spans will be set to that color.
-            Values can be a string, a tuple of RGBA values (0-1), or a Colormap.
+            If a Colormap is provided, LinearSegmentedColormap will be used to
+            generate N colors from the colormap, while ListedColormap will be truncated 
+            or repeated to match N.
+            Values can be a string (i.e. hex), a tuple of RGBA values (0-1), or a Colormap.
 
         handle_colors : list[:mpltype:`color`] | :mpltype:`color` | Colormap, optional
             A general mapping of colors to the edge handles. By default None.
             Should match the dimensions of `colors` parameter if a list.
-            If None, the edge handles will be set to half the RGB values of
+            If None, the edge handles will be multiplied by `dim` to modify the RGB values of
             the rectangle colors.
+            Note, handle alpha values are disregarded and inherited from the rectangle colors.
+            
+        dim : float, default: 0.5
+            The factor by which to dim the RGB values of the rectangle colors
+            to create the edge handle colors, if `handle_colors` is None.
         """
-        rect_clist = []
-        handle_clist = []
-        # Check typing of handle_colors
-        if handle_colors is not None:
-            if hasattr(rect_colors, "__len__") and hasattr(handle_colors, "__len__"):
-                if len(rect_colors) != len(handle_colors):
-                    raise ValueError(
-                        "rect_colors and handle_colors must " +
-                        "be the same length."
-                    )
-
-        ## Gather all colors for the rectangles and edge handles.
-        # LIST
-        if isinstance(rect_colors, list):
-            rect_clist = rect_colors.copy()
-            # LIST OF STRINGS
-            if isinstance(rect_colors[0], str):
-                handle_clist = (
-                    handle_colors.copy()
-                    if handle_colors is not None
-                    else rect_clist.copy()
-                )
-            # LIST OF TUPLES RGBA / RGB
-            elif isinstance(rect_colors[0], (tuple, list)):
-                handle_clist = (
-                    # List of RGBA from rect_colors
-                    [
-                        (
-                            (*(RGB * 0.5 for RGB in color[0:3]), color[3])
-                            if len(rect_colors[0]) > 3
-                            # List of RGB from rect_colors
-                            else (RGB * 0.5 for RGB in color[0:3])
-                        )
-                        for color in rect_colors
-                    ]
-                    if handle_colors is None
-                    # If handle_colors is defined, use that for the edge handles.
-                    else handle_colors
-                )
-                if len(rect_colors) > 3:
-                    handle_clist = [RGB + (rect_colors[3],) for RGB in handle_clist]
+        rect_clist: list["ColorType"] = []
+        """The list of colors for the rectangles."""
+        handle_clist: list["ColorType"] = []
+        """The list of modified colors for the edge handles."""
+        
+        ## Gather all colors for the rectangles:
+        # Colormap
+        if isinstance(rect_colors, colors.Colormap):
+            # Choose evently spaced N colors from a LinearSegmentedColormap, 
+            # or first N colors from a ListedColormap.
+            if isinstance(rect_colors, colors.ListedColormap):
+                # Truncate or repeat ListedColormap to match N
+                base_colors = rect_colors.colors
+                # Make sure base_colors is a list
+                # if not isinstance(base_colors, (list, np.ndarray)):
+                #     base_colors = [base_colors]
+                # 
+                if hasattr(base_colors, "__len__"):
+                    n_base = len(base_colors)
+                    for i in range(self.N):
+                        c = base_colors[i % n_base]
+                        # RGB/RGBA tuple
+                        if isinstance(c, tuple) and (len(c) == 3 or len(c) == 4) and all(isinstance(v, (int, float)) for v in c):
+                            rect_clist.append(c) # type: ignore
+                        elif isinstance(c, str):
+                            rect_clist.append(c)
+                        else:
+                            raise TypeError(f"ListedColormap contains an invalid color format ({c}).")
+                else:
+                    # No length, assume gray scale value
+                    rect_clist = [base_colors for _ in range(self.N)]  # type: ignore
+            elif isinstance(rect_colors, colors.LinearSegmentedColormap):
+                # Use LinearSegmentedColormap to get N colours.
+                n_list = np.linspace(0, 1, self.N)
+                rect_clist = rect_colors(n_list).tolist() 
             else:
-                raise TypeError("rect_colors must be a list of strings or tuples.")
-        # TUPLE RGBA / RGB
-        elif isinstance(rect_colors, tuple):
-            rect_clist = [rect_colors for _ in range(self.N)]
-            handle_clist = (
-                # List of RGBA from rect_colors tuple
-                [
-                    (
-                        (*(RGB * 0.5 for RGB in rect_colors[0:3]), rect_colors[3])
-                        if len(rect_colors) > 3
-                        # List of RGB from rect_colors tuple
-                        else (RGB * 0.5 for RGB in rect_colors[0:3])
-                    )
-                    for _ in range(self.N)
-                ]
-                if handle_colors is None
-                else [handle_colors for _ in range(self.N)]
-            )
-        # STR
-        elif isinstance(rect_colors, str):
-            # String cannot be used to set darker edge handles. Just copy.
-            rect_clist = [rect_colors for _ in range(self.N)]
-            handle_clist = (
-                rect_clist.copy()
-                if handle_colors is None
-                else [handle_colors for _ in range(self.N)]
-            )
-        # CMAP
-        elif isinstance(rect_colors, colors.Colormap):
-            # Use discrete colormap (i.e., mpl.colormaps.get("tab10")) to get N colours.
-            rect_clist = [rect_colors(i) for i in range(self.N)]
-            handle_clist = (
-                # List of RGBA from rect_colors tuple
-                [
-                    (
-                        (*(RGB * 0.5 for RGB in color[0:3]), color[3])
-                        if len(color) > 3
-                        # List of RGB from rect_colors tuple
-                        else (RGB * 0.5 for RGB in color[0:3])
-                    )
-                    for color in rect_clist
-                ]
-                if handle_colors is None
-                else [handle_colors(i) for i in range(self.N)]
-            )
+                raise TypeError("rect_colors Colormap must be ListedColormap or LinearSegmentedColormap.")
+        # LIST
+        elif isinstance(rect_colors, list):
+            rect_clist = rect_colors.copy()
         else:
-            raise TypeError("rect_colors must be a list, string or Colormap.")
-
+            raise TypeError("rect_colors must be a list, tuple, string, or Colormap.")
+            
+        ## Gather all colors for the edge handles:
+        # Colormap
+        if isinstance(handle_colors, colors.Colormap):
+            # Choose evently spaced N colors from a LinearSegmentedColormap, 
+            # or first N colors from a ListedColormap.
+            if isinstance(handle_colors, colors.ListedColormap):
+                # Truncate or repeat ListedColormap to match N
+                base_colors = handle_colors.colors
+                # Make sure base_colors is a list
+                if not isinstance(base_colors, (list, np.ndarray)):
+                    base_colors = [base_colors]
+                # 
+                n_base = len(base_colors)
+                for i in range(self.N):
+                    c = base_colors[i % n_base]
+                    # RGB/RGBA tuple
+                    if isinstance(c, tuple) and (len(c) == 3 or len(c) == 4) and all(isinstance(v, (int, float)) for v in c):
+                        handle_clist.append(c) # type: ignore
+                    elif isinstance(c, str):
+                        handle_clist.append(c)
+                    else:
+                        raise TypeError(f"ListedColormap contains an invalid color format ({c}).")
+            elif isinstance(handle_colors, colors.LinearSegmentedColormap):
+                # Use LinearSegmentedColormap to get N colours.
+                n_list = np.linspace(0, 1, self.N)
+                handle_clist = handle_colors(n_list).tolist() 
+            else:
+                raise TypeError("handle_colors Colormap must be ListedColormap or LinearSegmentedColormap.")
+        # LIST
+        elif isinstance(handle_colors, list):
+            handle_clist = handle_colors.copy()
+        # Default None, Generate from dimming rect_colors
+        elif handle_colors is None:
+            for color in rect_clist:
+                # Hex / string colors
+                if isinstance(color, str):
+                    # Convert to RGB tuple, then halve RGB values for edge handles.
+                    rgb = colors.to_rgb(color)
+                    handle_clist.append(
+                        (dim * rgb[0], dim * rgb[1], dim * rgb[2])
+                    )
+                # RGB / RGBA tuple colors
+                elif isinstance(color, (tuple, list)) and all(isinstance(c, (int, float)) for c in color):
+                    # RGBA
+                    if len(color) == 4:
+                        handle_clist.append(
+                            (dim * color[0], dim * color[1], dim * color[2], color[3])
+                        )
+                    # RGB
+                    elif len(color) == 3:
+                        handle_clist.append(
+                            (dim * color[0], dim * color[1], dim * color[2])
+                        )
+                    else:
+                        raise TypeError(f"rect_colors contains an invalid color format of float/ints with length {len(color)}.")
+                # Tuple of (color, alpha)
+                elif (isinstance(color, (tuple, list)) and isinstance(color[0], (str, tuple)) 
+                      and isinstance(color[1], (int, float)) and len(color) == 2):
+                    # (str, alpha)
+                    if isinstance(color[0], str):
+                        rgb = colors.to_rgb(color[0])
+                        handle_clist.append(
+                            (dim * rgb[0], dim * rgb[1], dim * rgb[2], color[1])
+                        )
+                    # (RGB/RGBA tuple, alpha)
+                    elif (isinstance(color[0], (tuple, list)) and all(isinstance(c, (int, float)) for c in color[0]) 
+                          and (len(color[0])==3 or len(color[0])==4)):
+                        # Override alpha if RGBA tuple
+                        handle_clist.append(
+                            (dim * color[0][0], dim * color[0][1], dim * color[0][2], color[1])
+                        )
+                    else:
+                        raise TypeError(f"rect_colors contains an invalid color format ({color}) in a (color, alpha) tuple.")
+                else:
+                    raise TypeError(f"rect_colors contains an invalid color format ({color}).")
+            
+            def clamp(rgb: tuple[float, ...]) -> tuple[float, ...]:
+                """Clamp all RGB/RGBA values to be within 0-1 range."""
+                clamped = []
+                for v in rgb:
+                    if v < 0:
+                        clamped.append(0)
+                    elif v > 1:
+                        clamped.append(1)
+                    else:
+                        clamped.append(v)
+                return tuple(clamped)
+            
+            # Ensure all handle clist are within valid range.
+            for i, color in enumerate(handle_clist):
+                # RGBA/RGB/(RGBA/RGB, alpha) tuple
+                if isinstance(color, tuple):
+                    if len(color) == 2 and isinstance(color[0], tuple) and len(color[0]) >= 3:
+                        # (RGB|RGBA, alpha) tuple
+                        color = clamp(tuple(*color[0:3], color[1]))
+                        handle_clist[i] = color
+                    elif (len(color) == 3 or len(color) == 4) and all(isinstance(c, (int, float)) for c in color):
+                        # RGB|RGBA tuple
+                        color = clamp(color)
+                        handle_clist[i] = color
+                    else:
+                        raise TypeError(f"handle_colors contains an invalid color format of float/ints with length {len(color)}.")
+                # No need to handle string colors.
+        else:
+            raise TypeError("handle_colors must be a list, tuple, string, or Colormap.")
+              
         ## Apply colours to the rectangles and edge handles.
         for i, selection_artist in enumerate(self._selection_artists):
+            color = rect_clist[i]
             selection_artist.set_facecolor(rect_clist[i])
+            # Does the color have an alpha value?
+            if (isinstance(color, tuple) and len(color) == 4):
+                selection_artist.set_alpha(color[3])
+            elif (isinstance(color, tuple) and len(color) == 2):
+                selection_artist.set_alpha(color[1])
+            # Set edge handle colors
             if self._interactive:
                 self._edge_handles._artists[i * 2].set_color(handle_clist[i])
                 self._edge_handles._artists[i * 2 + 1].set_color(handle_clist[i])
-        return
+                # Handle alpha is controlled by the rect alpha.
+                return
 
     ### --------------- Override attributes of _SelectorWidget ---------------:
     # Overrides to include self._selection_artists instead of
@@ -3495,6 +3594,7 @@ class NSpanSelector(SpanSelector):
 
     # Overrides set_props to set properties for all selection artists.
     # Also updates the class dict for props.
+    @override
     def set_props(self, index=None, **props) -> None:
         artists = self._selection_artists
         if index is None:
@@ -3512,7 +3612,8 @@ class NSpanSelector(SpanSelector):
 
     ### --------------- Overridden attributes of SpanSelector ---------------:
     # Overrides to define 2*self.N handles for selection in _edge_handles.
-    def _setup_edge_handles(self, props):
+    @override
+    def _setup_edge_handles(self, props) -> None:
         # Define initial position using the axis bounds to keep the same bounds
         if self.direction == "horizontal":
             positions = self.ax.get_xbound()
@@ -3534,7 +3635,8 @@ class NSpanSelector(SpanSelector):
     # Overrides to define self.N rectangles for selection in rect_artists
     # and self._selection_artists variables. Previously was rect_artist and
     # self._selection_artist.
-    def new_axes(self, ax, *, _props=None):
+    @override
+    def new_axes(self, ax, *, _props=None, _init=False) -> None:
         """Set SpanSelector to operate on a new Axes."""
         # Also implements an axis update, where the number of selections can be changed.
 
@@ -3542,8 +3644,7 @@ class NSpanSelector(SpanSelector):
         self._selection_completed = False
         if (
             self.ax is ax
-            and hasattr(self, "_selection_artists")
-            and self._selection_artists is not None
+            and getattr(self, "_selection_artists", None) is not None
         ):
             # Updating axis
             art_len = len(self._selection_artists)
@@ -3590,15 +3691,17 @@ class NSpanSelector(SpanSelector):
                         )
                         for i in range(self.N - art_len)
                     ]
+            # Disconnect and re-connect events to update canvas.
+            self.disconnect_events()
+            self.connect_default_events()
         else:
             self.ax = ax
             # assert isinstance(self.ax, Axes) # allow editor to recognise type.
-            if self.canvas is not ax.figure.canvas:
-                if self.canvas is not None:
-                    self.disconnect_events()
-
+            if self.canvas is not None:
+                self.disconnect_events()
+            if self.canvas is not ax.figure.canvas:  #Why is this necessary?
                 self.canvas = ax.figure.canvas
-                self.connect_default_events()
+            self.connect_default_events()
 
             # Direction of variables.
             if self.direction == "horizontal":
@@ -3642,23 +3745,34 @@ class NSpanSelector(SpanSelector):
     # Behaviour modified to handle removing and adding selections, and dragging.
     # Added _active_handle_vis to track if the handle was previously visible or not.
     # Added _active_selection_idx to track the active selection index.
-    def _press(self, event):
+    @override
+    def _press(self, event) -> Literal[False]:
         """Button press event handler."""
-        xdata, ydata = self._get_data_coords(event)
+        xdata, ydata = self._get_data(event)
         v = xdata if self.direction == "horizontal" else ydata
-        self._set_cursor(True)
+        self._set_cursor(
+            backend_tools.cursors.RESIZE_HORIZONTAL
+            if self.direction == "horizontal"
+            else backend_tools.cursors.RESIZE_VERTICAL
+        )
 
         # Tracking for non-visible selection artists.
         # Used in self._release if the selection is less than minspan;
         # Removes nearest visible instead of revealing invisible.
         self._active_handle_vis = True
 
-        # Check if  hovering an existing visible handle.
-        index, e_dist = self._edge_handles.closest(event.x, event.y)
-        hover = (
-            e_dist <= self.grab_range
-            and self._edge_handles.artists[index].get_visible()
-        )
+
+        if self._edge_handles is not None:
+            # Check if  hovering an existing visible handle.
+            index, e_dist = self._edge_handles.closest(event.x, event.y)
+            hover = (
+                e_dist <= self.grab_range
+                and self._edge_handles.artists[index].get_visible()
+            )
+        else:
+            # Handle unset edge handles case.
+            index, e_dist = 0, 0
+            hover = False
 
         # If any artists rect selection artists are not visible,
         # add one at the cursor location
@@ -3723,7 +3837,7 @@ class NSpanSelector(SpanSelector):
             # If outside the region, instead use closest edge determine which selection.
             self._active_handle = self._edge_order[edge_order_idx]
             # Get the extents for the active handle.
-            xdata, ydata = self._get_data_coords(event)
+            xdata, ydata = self._get_data(event)
             v = xdata if self.direction == "horizontal" else ydata
             ex = self.extents
             ex[h_idx] = v, v
@@ -3760,7 +3874,7 @@ class NSpanSelector(SpanSelector):
     def _onmove(self, event):
         """Motion notify event handler."""
 
-        xdata, ydata = self._get_data_coords(event)
+        xdata, ydata = self._get_data(event)
         if self.direction == "horizontal":
             v = xdata
             vpress = self._eventpress.xdata
@@ -3820,6 +3934,8 @@ class NSpanSelector(SpanSelector):
 
     # Overrides to check if hovering over any visible edge handle.
     # Additionally enables functionality with incomplete selection.
+    @override
+    @_call_with_reparented_event
     def _hover(self, event):
         """Update the canvas cursor if it's over a handle."""
         if self.ignore(event):
@@ -3832,8 +3948,15 @@ class NSpanSelector(SpanSelector):
 
         index, e_dist = self._edge_handles.closest(event.x, event.y)
         self._set_cursor(
+            (
+                backend_tools.cursors.RESIZE_HORIZONTAL
+                if self.direction == "horizontal"
+                else backend_tools.cursors.RESIZE_VERTICAL
+            )
+            if
             e_dist <= self.grab_range
             and self._edge_handles.artists[index].get_visible()
+            else backend_tools.cursors.POINTER
         )
 
     # Overrides to handle multiple selections, by adding an index parameter.
@@ -3869,9 +3992,10 @@ class NSpanSelector(SpanSelector):
                 artist.set_visible(visible)
 
     # Overrides release method to call onselect for various selections.
+    @override
     def _release(self, event):
         """Button release event handler."""
-        self._set_cursor(False)
+        self._set_cursor(backend_tools.cursors.POINTER)
 
         ### If already completed, return and don't trigger onselect callback.
         if (
@@ -3901,7 +4025,7 @@ class NSpanSelector(SpanSelector):
         # Hide current span in case the span is less than minspan.
         # Perform again later if changing handle
         idx = self._active_selection_idx
-        if self._active_selection_idx is not None:
+        if idx is not None:
             if spans[idx] <= self.minspan:
                 self.set_visible(False, index=idx)
 
@@ -3920,7 +4044,7 @@ class NSpanSelector(SpanSelector):
         ):
             # Hide the nearest visible selection if any visible.
             # Use release x,y to find closest visible.
-            xdata, ydata = self._get_data_coords(event)
+            xdata, ydata = self._get_data(event)
             vis_idx = np.argmin(
                 [
                     # Minimum of X or X + Width for horizontal
@@ -4046,6 +4170,13 @@ class NSpanSelector(SpanSelector):
         self._extents_on_press = None
 
         return False
+
+    @override
+    def connect_default_events(self):
+        # docstring inherited
+        _SelectorWidget.connect_default_events(self)
+        if getattr(self, '_interactive', False):
+            self.connect_event('motion_notify_event', self._hover)
 
     @property
     def extents(self) -> list[tuple[float, float]]:

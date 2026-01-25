@@ -398,7 +398,7 @@ class ToolHandles:
     def set_animated(self, val: bool) -> None: ...
     def closest(self, x: float, y: float) -> tuple[int, float]: ...
 
-class NSpanSelector(SpanSelector):
+class SpanSelectorN(SpanSelector):
     def __init__(
         self,
         N: int,
@@ -420,6 +420,7 @@ class NSpanSelector(SpanSelector):
         snap_values: ArrayLike | None = ...,
         colors: ColorType | Colormap | None = ...
     ) -> None: ...
+    
     def color_spans(
         self,
         rect_colors: list[ColorType] | ColorType | Colormap = ...,
