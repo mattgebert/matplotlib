@@ -405,11 +405,11 @@ class SpanSelectorN(SpanSelector):
         ax: Axes,
         onselect: Callable[[float, float], Any] | list[Callable[[float, float], Any]],
         direction: Literal["horizontal"] | Literal["vertical"],
-        callback_at_selection_complete: bool,
+        *,
+        callback_at_selection_complete: bool = ...,
         minspan: float = ...,
         useblit: bool = ...,
         props: dict[str, Any] | None = ...,
-        onmove_callback: Callable[[float, float], Any] | list[Callable[[float, float], Any]] | None = ...,
         interactive: bool = ...,
         button: MouseButton | Collection[MouseButton] | None = ...,
         handle_props: dict[str, Any] | None = ...,
@@ -418,9 +418,13 @@ class SpanSelectorN(SpanSelector):
         drag_from_anywhere: bool = ...,
         ignore_event_outside: bool = ...,
         snap_values: ArrayLike | None = ...,
-        colors: ColorType | Colormap | None = ...
+        onmove_callback: Callable[[float, float], Any] | list[Callable[[float, float], Any]] | None = ...,
+        colors: list[ColorType] | ColorType | Colormap | None = ...
     ) -> None: ...
-    
+
+    @property
+    def N(self) -> int: ...
+
     def color_spans(
         self,
         rect_colors: list[ColorType] | ColorType | Colormap = ...,
