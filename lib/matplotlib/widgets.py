@@ -3403,13 +3403,26 @@ class SpanSelectorN(SpanSelector):
     # Also updates the class dict for props.
     @override
     def set_props(self, index=None, **props) -> None:
+        """
+        Set properties for the selection artists.
+
+        Parameters
+        ----------
+        index : int, optional
+            If provided, only set the properties for the selection at the given index.
+            Otherwise, set the properties for all selections, and update the global
+            properties for all selections.
+        **props
+            Properties to set for the selection artists.
+            See `.Patch` for valid properties.
+        """
         artists = self._selection_artists
         if index is None:
             for artist in artists:
                 props = cbook.normalize_kwargs(props, artist)
                 artist.set(**props)
             # Additionally updates stores global selection props
-            self._handle_props.update(props)
+            self._props.update(props)
         else:
             props = cbook.normalize_kwargs(props, artists[index])
             artists[index].set(**props)
@@ -3417,10 +3430,55 @@ class SpanSelectorN(SpanSelector):
         if self.useblit:
             self.update()
 
+    def set_handle_props(self, index=None, **handle_props):
+        """
+        Set properties for the handle artists.
+
+        Only applicable when interactive is True.
+
+        Parameters
+        ----------
+        index : int, optional
+            If provided, only set the properties for the handle at the given index.
+            Otherwise, set the properties for all handles.
+        **handle_props
+            Properties to set for the handle artists.
+            See `.Line2D` for valid properties.
+        """
+        artists = self._edge_handles.artists
+        if artists is None or len(artists) == 0 or self._interactive is False:
+            return
+
+        if index is None:
+            for artist in artists:
+                handle_props = cbook.normalize_kwargs(handle_props, artist)
+                artist.set(**handle_props)
+            # Additionally updates stores global handle props
+            self._handle_props.update(handle_props)
+        else:
+            handle_props = cbook.normalize_kwargs(handle_props, artists[2*index])
+            handle_props = cbook.normalize_kwargs(handle_props, artists[2*index+1])
+            artists[2*index].set(**handle_props)
+            artists[2*index+1].set(**handle_props)
+            # Do not store local handle props.
+        if self.useblit:
+            self.update()
+
     ### --------------- Overridden attributes of SpanSelector ---------------:
     # Overrides to define 2*self.N handles for selection in _edge_handles.
     @override
     def _setup_edge_handles(self, props=None) -> None:
+        """
+        Set up the edge handles for interactive selection.
+
+        Parameters
+        ----------
+        props : dict, optional
+            Properties for the handle lines. If None, uses the existing properties in
+            self._handle_props. Note that the 'color' property will be overridden by
+            _default_colors_handles if it is set.
+        """
+
         # Define initial position using the axis bounds to keep the same bounds
         if self.direction == "horizontal":
             positions = self.ax.get_xbound()
@@ -3432,8 +3490,9 @@ class SpanSelectorN(SpanSelector):
         nPositions = (positions[0] + dxy * i for i in range(2 * self.N))
 
         # If existing handles, collect their positions to override
-        if self._edge_handles is not None:
-            existing_positions = self._edge_handles.positions
+        handles = self._edge_handles
+        if handles is not None:
+            existing_positions = handles.positions
             nPositions = list(nPositions)
             for i in range(min(len(existing_positions), len(nPositions))):
                 nPositions[i] = existing_positions[i]
@@ -3458,7 +3517,9 @@ class SpanSelectorN(SpanSelector):
     # self._selection_artist.
     @override
     def new_axes(self, ax, *, _props=None, _init=False) -> None:
-        """Set SpanSelectorN to operate on a new Axes."""
+        """
+        Set SpanSelectorN to operate onto a new Axes.
+        """
         # Also implements an axis update, where the number of selections can be changed.
 
         # Reset selection on new axes.
@@ -3466,6 +3527,9 @@ class SpanSelectorN(SpanSelector):
         if (
             self.ax is ax
             and getattr(self, "_selection_artists", None) is not None
+            # Legacy checks from SpanSelector:
+            or _init
+            or self.canvas is not ax.get_figure(root=True).canvas
         ):
             # Updating axis
             art_len = len(self._selection_artists)
@@ -4094,6 +4158,7 @@ class SpanSelectorN(SpanSelector):
         if self.snap_values is not None:
             for i, extent in enumerate(extents):
                 extents[i] = tuple(self._snap(extent, self.snap_values))
+        # Draw the physical shapes
         self._draw_shapes(extents)
         if self._interactive:
             # Update displayed handles
