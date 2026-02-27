@@ -2,6 +2,7 @@ import functools
 import itertools
 import logging
 import math
+import datetime
 from numbers import Integral, Number, Real
 
 import re
@@ -131,7 +132,7 @@ class Axes(_AxesBase):
         titles = {'left': self._left_title,
                   'center': self.title,
                   'right': self._right_title}
-        title = _api.check_getitem(titles, loc=loc.lower())
+        title = _api.getitem_checked(titles, loc=loc.lower())
         return title.get_text()
 
     def set_title(self, label, fontdict=None, loc=None, pad=None, *, y=None,
@@ -198,7 +199,7 @@ class Axes(_AxesBase):
         titles = {'left': self._left_title,
                   'center': self.title,
                   'right': self._right_title}
-        title = _api.check_getitem(titles, loc=loc)
+        title = _api.getitem_checked(titles, loc=loc)
         default = {
             'fontsize': mpl.rcParams['axes.titlesize'],
             'fontweight': mpl.rcParams['axes.titleweight'],
@@ -8274,7 +8275,7 @@ such objects
                                               pad_to=pad_to, sides=sides)
         freqs += Fc
 
-        yunits = _api.check_getitem(
+        yunits = _api.getitem_checked(
             {None: 'energy', 'default': 'energy', 'linear': 'energy',
              'dB': 'dB'},
             scale=scale)
@@ -9144,14 +9145,28 @@ such objects
             positions = range(1, N + 1)
         elif len(positions) != N:
             raise ValueError(datashape_message.format("positions"))
-
         # Validate widths
         if np.isscalar(widths):
             widths = [widths] * N
         elif len(widths) != N:
             raise ValueError(datashape_message.format("widths"))
 
-        # Validate side
+        # For usability / better error message:
+        # Validate that datetime-like positions have timedelta-like widths.
+        # Checking only the first element is good enough for standard misuse cases
+        if N > 0:  # No need to validate if there is no data
+            pos0 = positions[0]
+            width0 = widths[0]
+            if (isinstance(pos0, (datetime.datetime, datetime.date))
+                and not isinstance(width0, datetime.timedelta)):
+                raise TypeError(
+                    "datetime/date 'position' values require timedelta 'widths'. "
+                    "For example, use positions=[datetime.date(2024, 1, 1)] "
+                    "and widths=[datetime.timedelta(days=1)].")
+            elif (isinstance(pos0, np.datetime64)
+                and not isinstance(width0, np.timedelta64)):
+                raise TypeError(
+                    "np.datetime64 'position' values require np.timedelta64 'widths'")
         _api.check_in_list(["both", "low", "high"], side=side)
 
         # Calculate ranges for statistics lines (shape (2, N)).

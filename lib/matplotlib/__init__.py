@@ -748,7 +748,7 @@ class RcParams(MutableMapping, dict):
                 and val is rcsetup._auto_backend_sentinel
                 and "backend" in self):
             return
-        valid_key = _api.check_getitem(
+        valid_key = _api.getitem_checked(
             self.validate, rcParam=key, _error_cls=KeyError
         )
         try:
@@ -1192,8 +1192,7 @@ def use(backend, *, force=True):
     Select the backend used for rendering and GUI integration.
 
     If pyplot is already imported, `~matplotlib.pyplot.switch_backend` is used
-    and if the new backend is different than the current backend, all Figures
-    will be closed.
+    to switch the backend.
 
     Parameters
     ----------
@@ -1492,6 +1491,8 @@ def _preprocess_data(func=None, *, replace_names=None, label_namer=None):
 
     @functools.wraps(func)
     def inner(ax, *args, data=None, **kwargs):
+        __tracebackhide__ = True
+
         if data is None:
             return func(
                 ax,
