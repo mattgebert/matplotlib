@@ -5,6 +5,7 @@ import inspect
 import json
 import os
 import platform
+import re
 import signal
 import subprocess
 import sys
@@ -16,7 +17,6 @@ from PIL import Image
 
 import pytest
 
-import matplotlib as mpl
 from matplotlib import _c_internal_utils
 from matplotlib.backend_tools import ToolToggleBase
 from matplotlib.testing import subprocess_run_helper as _run_helper, is_ci_environment
@@ -46,7 +46,7 @@ class _WaitForStringPopen(subprocess.Popen):
                     f'Subprocess died before emitting expected {terminator!r}')
             buf += c
             if buf.endswith(terminator):
-                return
+                return buf
 
 
 # Minimal smoke-testing of the backends for which the dependencies are
@@ -63,10 +63,10 @@ def _get_available_interactive_backends():
     for deps, env in [
             *[([qt_api],
                {"MPLBACKEND": "qtagg", "QT_API": qt_api})
-              for qt_api in ["PyQt6", "PySide6", "PyQt5", "PySide2"]],
+              for qt_api in ["PyQt6", "PySide6", "PyQt5"]],
             *[([qt_api, "cairocffi"],
                {"MPLBACKEND": "qtcairo", "QT_API": qt_api})
-              for qt_api in ["PyQt6", "PySide6", "PyQt5", "PySide2"]],
+              for qt_api in ["PyQt6", "PySide6", "PyQt5"]],
             *[(["cairo", "gi"], {"MPLBACKEND": f"gtk{version}{renderer}"})
               for version in [3, 4] for renderer in ["agg", "cairo"]],
             (["tkinter"], {"MPLBACKEND": "tkagg"}),
@@ -89,7 +89,7 @@ def _get_available_interactive_backends():
             reason = "macosx backend fails on Azure"
         elif env["MPLBACKEND"].startswith('gtk'):
             try:
-                import gi  # type: ignore[import]
+                import gi
             except ImportError:
                 # Though we check that `gi` exists above, it is possible that its
                 # C-level dependencies are not available, and then it still raises an
@@ -119,8 +119,9 @@ def _get_testable_interactive_backends():
             for env, marks in _get_available_interactive_backends()]
 
 
-# Reasonable safe values for slower CI/Remote and local architectures.
-_test_timeout = 120 if is_ci_environment() else 20
+# Reasonable safe values for slower CI/Remote and local architectures; timeouts may be
+# automatically increased later by subprocess_run_helper.
+_test_timeout = 20
 _retry_count = 3 if is_ci_environment() else 0
 
 
@@ -160,7 +161,6 @@ def _test_interactive_impl():
     from matplotlib.backend_bases import KeyEvent, FigureCanvasBase
     mpl.rcParams.update({
         "webagg.open_in_browser": False,
-        "webagg.port_retries": 1,
     })
 
     mpl.rcParams.update(json.loads(sys.argv[1]))
@@ -318,20 +318,12 @@ for param in _thread_safe_backends:
             param.marks.append(
                 pytest.mark.xfail(raises=subprocess.TimeoutExpired,
                                   strict=True))
-    elif param.values[0].get("QT_API") == "PySide2":
-        param.marks.append(
-            pytest.mark.xfail(raises=subprocess.CalledProcessError))
     elif backend == "tkagg" and platform.python_implementation() != 'CPython':
         param.marks.append(
             pytest.mark.xfail(
                 reason='PyPy does not support Tkinter threading: '
                        'https://foss.heptapod.net/pypy/pypy/-/issues/1929',
                 strict=True))
-    elif (backend == 'tkagg' and
-          ('TF_BUILD' in os.environ or 'GITHUB_ACTION' in os.environ) and
-          sys.platform == 'darwin' and sys.version_info[:2] < (3, 11)):
-        param.marks.append(  # https://github.com/actions/setup-python/issues/649
-            pytest.mark.xfail('Tk version mismatch on Azure macOS CI'))
 
 
 @pytest.mark.parametrize("env", _thread_safe_backends)
@@ -366,7 +358,7 @@ def _implqt5agg():
 
     assert 'PyQt6' not in sys.modules
     assert 'pyside6' not in sys.modules
-    assert 'PyQt5' in sys.modules or 'pyside2' in sys.modules
+    assert 'PyQt5' in sys.modules
 
 
 def _implcairo():
@@ -375,7 +367,7 @@ def _implcairo():
 
     assert 'PyQt6' not in sys.modules
     assert 'pyside6' not in sys.modules
-    assert 'PyQt5' in sys.modules or 'pyside2' in sys.modules
+    assert 'PyQt5' in sys.modules
 
 
 def _implcore():
@@ -384,12 +376,12 @@ def _implcore():
 
     assert 'PyQt6' not in sys.modules
     assert 'pyside6' not in sys.modules
-    assert 'PyQt5' in sys.modules or 'pyside2' in sys.modules
+    assert 'PyQt5' in sys.modules
 
 
 def test_qt5backends_uses_qt5():
     qt5_bindings = [
-        dep for dep in ['PyQt5', 'pyside2']
+        dep for dep in ['PyQt5']
         if importlib.util.find_spec(dep) is not None
     ]
     qt6_bindings = [
@@ -409,7 +401,6 @@ def _impl_missing():
     # Simulate uninstalled
     sys.modules["PyQt6"] = None
     sys.modules["PyQt5"] = None
-    sys.modules["PySide2"] = None
     sys.modules["PySide6"] = None
 
     import matplotlib.pyplot as plt
@@ -444,7 +435,7 @@ def _impl_test_cross_Qt_imports():
 
 def qt5_and_qt6_pairs():
     qt5_bindings = [
-        dep for dep in ['PyQt5', 'PySide2']
+        dep for dep in ['PyQt5']
         if importlib.util.find_spec(dep) is not None
     ]
     qt6_bindings = [
@@ -484,32 +475,32 @@ def test_cross_Qt_imports(host, mpl):
 @pytest.mark.skipif(sys.platform == "win32", reason="Cannot send SIGINT on Windows.")
 def test_webagg():
     pytest.importorskip("tornado")
-    proc = subprocess.Popen(
-        [sys.executable, "-c",
-         inspect.getsource(_test_interactive_impl)
-         + "\n_test_interactive_impl()", "{}"],
-        env={**os.environ, "MPLBACKEND": "webagg", "SOURCE_DATE_EPOCH": "0"})
-    url = f'http://{mpl.rcParams["webagg.address"]}:{mpl.rcParams["webagg.port"]}'
-    timeout = time.perf_counter() + _test_timeout
-    try:
-        while True:
-            try:
-                retcode = proc.poll()
-                # check that the subprocess for the server is not dead
-                assert retcode is None
-                conn = urllib.request.urlopen(url)
-                break
-            except urllib.error.URLError:
-                if time.perf_counter() > timeout:
-                    pytest.fail("Failed to connect to the webagg server.")
-                else:
-                    continue
-        conn.close()
-        proc.send_signal(signal.SIGINT)
-        assert proc.wait(timeout=_test_timeout) == 0
-    finally:
-        if proc.poll() is None:
-            proc.kill()
+    source = (inspect.getsource(_test_interactive_impl) +
+              "\n_test_interactive_impl()")
+    rc = '{"backend": "webagg"}'
+    with _WaitForStringPopen([sys.executable, "-c", source, rc]) as proc:
+        try:
+            buf = proc.wait_for('Press Ctrl+C')
+            url = re.search(r'visit (https?:\/\/\S+)', buf).group(1)
+            timeout = time.perf_counter() + _test_timeout
+            while True:
+                try:
+                    retcode = proc.poll()
+                    # check that the subprocess for the server is not dead
+                    assert retcode is None
+                    with urllib.request.urlopen(url):
+                        # Do nothing; we've just confirmed that we can connect.
+                        break
+                except urllib.error.URLError:
+                    if time.perf_counter() > timeout:
+                        pytest.fail("Failed to connect to the webagg server.")
+                    else:
+                        continue
+            proc.send_signal(signal.SIGINT)
+            assert proc.wait(timeout=_test_timeout) == 0
+        finally:
+            if proc.poll() is None:
+                proc.kill()
 
 
 def _lazy_headless():
@@ -611,14 +602,6 @@ for param in _blit_backends:
     elif backend == "wx":
         param.marks.append(
             pytest.mark.skip("wx does not support blitting"))
-    elif (backend == 'tkagg' and
-          ('TF_BUILD' in os.environ or 'GITHUB_ACTION' in os.environ) and
-          sys.platform == 'darwin' and
-          sys.version_info[:2] < (3, 11)
-          ):
-        param.marks.append(  # https://github.com/actions/setup-python/issues/649
-            pytest.mark.xfail('Tk version mismatch on Azure macOS CI')
-        )
 
 
 @pytest.mark.parametrize("env", _blit_backends)
@@ -702,8 +685,11 @@ def _test_sigint_impl(backend, target_name, kwargs):
 
     def interrupter():
         if sys.platform == 'win32':
-            import win32api
-            win32api.GenerateConsoleCtrlEvent(0, 0)
+            from ctypes import windll, wintypes
+            GenerateConsoleCtrlEvent = windll.kernel32.GenerateConsoleCtrlEvent
+            GenerateConsoleCtrlEvent.argtypes = [wintypes.DWORD, wintypes.DWORD]
+            GenerateConsoleCtrlEvent.restype = wintypes.BOOL
+            GenerateConsoleCtrlEvent(0, 0)
         else:
             import signal
             os.kill(os.getpid(), signal.SIGINT)
@@ -734,18 +720,17 @@ def test_sigint(env, target, kwargs):
     backend = env.get("MPLBACKEND")
     if not backend.startswith(("qt", "macosx")):
         pytest.skip("SIGINT currently only tested on qt and macosx")
-    proc = _WaitForStringPopen(
-        [sys.executable, "-c",
-         inspect.getsource(_test_sigint_impl) +
-         f"\n_test_sigint_impl({backend!r}, {target!r}, {kwargs!r})"])
-    try:
-        proc.wait_for('DRAW')
-        stdout, _ = proc.communicate(timeout=_test_timeout)
-    except Exception:
-        proc.kill()
-        stdout, _ = proc.communicate()
-        raise
-    assert 'SUCCESS' in stdout
+    source = (inspect.getsource(_test_sigint_impl) +
+              f"\n_test_sigint_impl({backend!r}, {target!r}, {kwargs!r})")
+    with _WaitForStringPopen([sys.executable, "-c", source]) as proc:
+        try:
+            proc.wait_for('DRAW')
+            stdout, _ = proc.communicate(timeout=_test_timeout)
+        except Exception:
+            proc.kill()
+            stdout, _ = proc.communicate()
+            raise
+        assert 'SUCCESS' in stdout
 
 
 def _test_other_signal_before_sigint_impl(backend, target_name, kwargs):
@@ -793,20 +778,19 @@ def test_other_signal_before_sigint(env, target, kwargs, request):
         # https://github.com/matplotlib/matplotlib/issues/27984
         request.node.add_marker(
             pytest.mark.xfail(reason="Qt backend is buggy on macOS"))
-    proc = _WaitForStringPopen(
-        [sys.executable, "-c",
-         inspect.getsource(_test_other_signal_before_sigint_impl) +
-         "\n_test_other_signal_before_sigint_impl("
-            f"{backend!r}, {target!r}, {kwargs!r})"])
-    try:
-        proc.wait_for('DRAW')
-        os.kill(proc.pid, signal.SIGUSR1)
-        proc.wait_for('SIGUSR1')
-        os.kill(proc.pid, signal.SIGINT)
-        stdout, _ = proc.communicate(timeout=_test_timeout)
-    except Exception:
-        proc.kill()
-        stdout, _ = proc.communicate()
-        raise
+    source = (inspect.getsource(_test_other_signal_before_sigint_impl) +
+              "\n_test_other_signal_before_sigint_impl("
+              f"{backend!r}, {target!r}, {kwargs!r})")
+    with _WaitForStringPopen([sys.executable, "-c", source]) as proc:
+        try:
+            proc.wait_for('DRAW')
+            os.kill(proc.pid, signal.SIGUSR1)
+            proc.wait_for('SIGUSR1')
+            os.kill(proc.pid, signal.SIGINT)
+            stdout, _ = proc.communicate(timeout=_test_timeout)
+        except Exception:
+            proc.kill()
+            stdout, _ = proc.communicate()
+            raise
     print(stdout)
     assert 'SUCCESS' in stdout

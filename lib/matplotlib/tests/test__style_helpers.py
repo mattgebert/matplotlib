@@ -1,7 +1,7 @@
 import pytest
 
 import matplotlib.colors as mcolors
-from matplotlib.lines import _get_dash_pattern
+from matplotlib.lines import _get_dash_pattern  # type: ignore[attr-defined]
 from matplotlib._style_helpers import style_generator
 
 
@@ -59,7 +59,7 @@ def test_style_generator_raises_on_empty_style_parameter_list(key):
 def test_style_generator_sequence_type_styles():
     """
     Test that sequence type style values are detected as single value
-    and passed to a all elements of the generator.
+    and passed to all elements of the generator.
     """
     kw = {'facecolor':  ('r', 0.5),
           'edgecolor': [0.5, 0.5, 0.5],

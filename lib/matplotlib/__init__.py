@@ -250,7 +250,7 @@ def _check_versions():
     from . import ft2font  # noqa: F401
 
     for modname, minver in [
-            ("cycler", "0.10"),
+            ("cycler", "0.12.0"),
             ("dateutil", "2.7"),
             ("kiwisolver", "1.3.1"),
             ("numpy", "1.25"),
@@ -575,7 +575,10 @@ def _get_config_or_cache_dir(xdg_base_getter):
             if os.access(str(configdir), os.W_OK) and configdir.is_dir():
                 return str(configdir)
             _log.warning("%s is not a writable directory", configdir)
-        issue_msg = "the default path ({configdir})"
+        if os.environ.get('MPLCONFIGDIR'):
+            issue_msg = f"MPLCONFIGDIR ({configdir})"
+        else:
+            issue_msg = f"the default path ({configdir})"
     else:
         issue_msg = "resolving the home directory"
     # If the config or cache directory cannot be created or is not a writable
@@ -779,6 +782,8 @@ class RcParams(MutableMapping, dict):
             cval = valid_key(val)
         except ValueError as ve:
             raise ValueError(f"Key {key}: {ve}") from None
+        if key in {"text.hinting_factor", "text.kerning_factor"} and cval is not None:
+            _api.warn_deprecated("3.11", name=key, obj_type="rcParam")
         self._set(key, cval)
 
     def __getitem__(self, key):
@@ -1355,8 +1360,8 @@ def _val_or_rc(val, *rc_names):
 
 def _init_tests():
     # The version of FreeType to install locally for running the tests. This must match
-    # the value in `meson.build`.
-    LOCAL_FREETYPE_VERSION = '2.6.1'
+    # the value in `subprojects/freetype2.wrap`.
+    LOCAL_FREETYPE_VERSION = '2.14.3'
 
     from matplotlib import ft2font
     if (ft2font.__freetype_version__ != LOCAL_FREETYPE_VERSION or
@@ -1371,6 +1376,11 @@ def _init_tests():
             LOCAL_FREETYPE_VERSION,
             ft2font.__freetype_version__,
             "" if ft2font.__freetype_build_type__ == 'local' else "not ")
+
+    # Generate a shortcut for classic testing style.
+    from matplotlib.style import _base_library, library
+    _base_library['_classic_test'] = library['_classic_test'] = RcParams(
+            _base_library['classic'] | _base_library['_classic_test_patch'])
 
 
 def _replacer(data, value):

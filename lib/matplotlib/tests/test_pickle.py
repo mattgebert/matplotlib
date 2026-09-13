@@ -1,7 +1,6 @@
 from io import BytesIO
 import ast
 import os
-import sys
 import pickle
 import pickletools
 
@@ -10,14 +9,14 @@ import pytest
 
 import matplotlib as mpl
 from matplotlib import cm
-from matplotlib.testing import subprocess_run_helper, is_ci_environment
+from matplotlib.testing import subprocess_run_helper
 from matplotlib.testing.decorators import check_figures_equal
-from matplotlib.dates import rrulewrapper
+from matplotlib.dates import rrulewrapper  # type: ignore[attr-defined]
 from matplotlib.lines import VertexSelector
 import matplotlib.pyplot as plt
 import matplotlib.transforms as mtransforms
 import matplotlib.figure as mfigure
-from mpl_toolkits.axes_grid1 import axes_divider, parasite_axes  # type: ignore[import]
+from mpl_toolkits.axes_grid1 import axes_divider, parasite_axes
 
 
 def test_simple():
@@ -124,7 +123,6 @@ def test_complete(fig_test, fig_ref):
 
 
 def _pickle_load_subprocess():
-    import os
     import pickle
 
     path = os.environ['PICKLE_FILE_PATH']
@@ -318,14 +316,9 @@ def _test_axeswidget_interactive():
     pickle.dumps(mpl.widgets.Button(ax, "button"))
 
 
-@pytest.mark.xfail(  # https://github.com/actions/setup-python/issues/649
-        ('TF_BUILD' in os.environ or 'GITHUB_ACTION' in os.environ) and
-        sys.platform == 'darwin' and sys.version_info[:2] < (3, 11),
-        reason='Tk version mismatch on Azure macOS CI'
-    )
 def test_axeswidget_interactive():
     subprocess_run_helper(
         _test_axeswidget_interactive,
-        timeout=120 if is_ci_environment() else 20,
+        timeout=20,
         extra_env={'MPLBACKEND': 'tkagg'}
     )

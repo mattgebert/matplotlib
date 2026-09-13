@@ -41,6 +41,7 @@ from matplotlib.container import (
     BarContainer, ErrorbarContainer, PieContainer, StemContainer)
 from matplotlib.text import Text
 from matplotlib.transforms import _ScaledRotation
+from matplotlib._api import UNSET as _UNSET
 
 _log = logging.getLogger(__name__)
 
@@ -556,8 +557,8 @@ class Axes(_AxesBase):
         """
         Add a second x-axis to this `~.axes.Axes`.
 
-        For example if we want to have a second scale for the data plotted on
-        the xaxis.
+        This axis is typically used to display a second x-scale for the data
+        plotted on the Axes.
 
         %(_secax_docstring)s
 
@@ -610,8 +611,8 @@ class Axes(_AxesBase):
         """
         Add a second y-axis to this `~.axes.Axes`.
 
-        For example if we want to have a second scale for the data plotted on
-        the yaxis.
+        This axis is typically used to display a second y-scale for the data
+        plotted on the Axes.
 
         %(_secax_docstring)s
 
@@ -1997,7 +1998,7 @@ class Axes(_AxesBase):
 
         Other Parameters
         ----------------
-        linestyle : `~matplotlib.lines.Line2D` property, optional
+        linestyle : :mpltype:`linestyle`, optional
             The linestyle for plotting the data points.
             Only used if *usevlines* is ``False``.
 
@@ -2077,7 +2078,7 @@ class Axes(_AxesBase):
 
         Other Parameters
         ----------------
-        linestyle : `~matplotlib.lines.Line2D` property, optional
+        linestyle : :mpltype:`linestyle`, optional
             The linestyle for plotting the data points.
             Only used if *usevlines* is ``False``.
 
@@ -2242,13 +2243,10 @@ class Axes(_AxesBase):
             except (TypeError, IndexError, KeyError):
                 x = xconv
 
-            delist = False
-            if not np.iterable(dx):
-                dx = [dx]
-                delist = True
-            dx = [convert(x0 + ddx) - x for ddx in dx]
-            if delist:
-                dx = dx[0]
+            if np.iterable(dx):
+                dx = [convert(x0 + ddx) - x for ddx in dx]
+            else:
+                dx = convert(x0 + dx) - x
         except (ValueError, TypeError, AttributeError):
             # if the above fails (for any reason) just fallback to what
             # we do by default and convert dx by itself.
@@ -2390,11 +2388,13 @@ class Axes(_AxesBase):
 
         label : str or list of str, optional
             A single label is attached to the resulting `.BarContainer` as a
-            label for the whole dataset.
+            legend label for the whole dataset.
             If a list is provided, it must be the same length as *x* and
             labels the individual bars. Repeated labels are not de-duplicated
             and will cause repeated label entries, so this is best used when
-            bars also differ in style (e.g., by passing a list to *color*.)
+            bars also differ in style (e.g., by passing a list to *color*).
+
+            Tip: Use `.bar_label` to place labels on the bars.
 
         xerr, yerr : float or array-like of shape(N,) or shape(2, N), optional
             If not *None*, add horizontal / vertical errorbars to the bar tips.
@@ -2407,11 +2407,16 @@ class Axes(_AxesBase):
               errors.
             - *None*: No errorbar. (Default)
 
-            See :doc:`/gallery/statistics/errorbar_features` for an example on
+            This is a convenience shortcut for an extra `~.axes.Axes.errorbar`
+            call. See its documentation and
+            :doc:`/gallery/statistics/errorbar_features` for an example on
             the usage of *xerr* and *yerr*.
 
         ecolor : :mpltype:`color` or list of :mpltype:`color`, default: 'black'
             The line color of the errorbars.
+            Multiple colors are only supported if the errorbars do not have
+            caps. If you need individually colored errorbars with caps, instead
+            use explicit `~.axes.Axes.errorbar` calls for each data point.
 
         capsize : float, default: :rc:`errorbar.capsize`
            The length of the error bar caps in points.
@@ -2435,6 +2440,7 @@ class Axes(_AxesBase):
         --------
         barh : Plot a horizontal bar plot.
         grouped_bar : Plot multiple datasets as grouped bar plot.
+        bar_label : Add labels to bars.
 
         Notes
         -----
@@ -2730,11 +2736,13 @@ class Axes(_AxesBase):
 
         label : str or list of str, optional
             A single label is attached to the resulting `.BarContainer` as a
-            label for the whole dataset.
-            If a list is provided, it must be the same length as *y* and
+            legend label for the whole dataset.
+            If a list is provided, it must be the same length as *x* and
             labels the individual bars. Repeated labels are not de-duplicated
             and will cause repeated label entries, so this is best used when
-            bars also differ in style (e.g., by passing a list to *color*.)
+            bars also differ in style (e.g., by passing a list to *color*).
+
+            Tip: Use `.bar_label` to place labels on the bars.
 
         xerr, yerr : float or array-like of shape(N,) or shape(2, N), optional
             If not *None*, add horizontal / vertical errorbars to the bar tips.
@@ -2775,6 +2783,7 @@ class Axes(_AxesBase):
         See Also
         --------
         bar : Plot a vertical bar plot.
+        bar_label : Add labels to bars.
 
         Notes
         -----
@@ -2896,10 +2905,8 @@ class Axes(_AxesBase):
 
             if orientation == "vertical":
                 extrema = max(y0, y1) if dat >= 0 else min(y0, y1)
-                length = abs(y0 - y1)
             else:  # horizontal
                 extrema = max(x0, x1) if dat >= 0 else min(x0, x1)
-                length = abs(x0 - x1)
 
             if err is None or np.size(err) == 0:
                 endpt = extrema
@@ -2907,11 +2914,6 @@ class Axes(_AxesBase):
                 endpt = err[:, 1].max() if dat >= 0 else err[:, 1].min()
             else:  # horizontal
                 endpt = err[:, 0].max() if dat >= 0 else err[:, 0].min()
-
-            if label_type == "center":
-                value = sign(dat) * length
-            else:  # edge
-                value = extrema
 
             if label_type == "center":
                 xy = (0.5, 0.5)
@@ -2955,9 +2957,9 @@ class Axes(_AxesBase):
 
             if lbl is None:
                 if isinstance(fmt, str):
-                    lbl = cbook._auto_format_str(fmt, value)
+                    lbl = cbook._auto_format_str(fmt, dat)
                 elif callable(fmt):
-                    lbl = fmt(value)
+                    lbl = fmt(dat)
                 else:
                     raise TypeError("fmt must be a str or callable")
             annotation = self.annotate(lbl,
@@ -3025,15 +3027,20 @@ class Axes(_AxesBase):
             [("x", xdata), ("y", ydata)], kwargs, convert=False)
 
         vertices = []
-        y0, dy = yrange
+        ypos, height = yrange
+
+        # Unit conversion: handling of the difference quantity height is done through
+        # _convert_dx() in the same way as width handling in bar().
+        y0 = self.convert_yunits(ypos)
+        dy = self._convert_dx(height, ypos, np.array(y0), self.convert_yunits)
 
         _api.check_in_list(['bottom', 'center', 'top'], align=align)
         if align == "bottom":
-            y0, y1 = self.convert_yunits((y0, y0 + dy))
+            y1 = y0 + dy
         elif align == "center":
-            y0, y1 = self.convert_yunits((y0 - dy/2, y0 + dy/2))
+            y0, y1 = y0 - dy / 2, y0 + dy / 2
         else:
-            y0, y1 = self.convert_yunits((y0 - dy, y0))
+            y0, y1 = y0 - dy, y0
 
         for xr in xranges:  # convert the absolute values, not the x and dx
             try:
@@ -3356,6 +3363,7 @@ or pandas.DataFrame
             else:
                 bc = self.barh(lefts, hs, height=bar_width, align="edge",
                                label=label, color=color, **styles, **kwargs)
+            bc.group_positions = group_centers
             bar_containers.append(bc)
 
         if tick_labels is not None:
@@ -3528,13 +3536,13 @@ or pandas.DataFrame
         self.add_container(stem_container)
         return stem_container
 
-    @_api.make_keyword_only("3.10", "explode")
-    @_preprocess_data(replace_names=["x", "explode", "labels", "colors"])
-    def pie(self, x, explode=None, labels=None, colors=None,
-            autopct=None, pctdistance=0.6, shadow=False, labeldistance=1.1,
-            startangle=0, radius=1, counterclock=True,
-            wedgeprops=None, textprops=None, center=(0, 0),
-            frame=False, rotatelabels=False, *, normalize=True, hatch=None):
+    @_preprocess_data(replace_names=["x", "explode", "labels", "colors",
+                                     "wedge_labels"])
+    def pie(self, x, *, explode=None, labels=None, colors=None, wedge_labels=None,
+            wedge_label_distance=0.6, autopct=None, pctdistance=0.6, shadow=False,
+            labeldistance=_UNSET, startangle=0, radius=1, counterclock=True,
+            wedgeprops=None, textprops=None, center=(0, 0), frame=False,
+            rotatelabels=False, normalize=True, hatch=None):
         """
         Plot a pie chart.
 
@@ -3554,7 +3562,13 @@ or pandas.DataFrame
             of the radius with which to offset each wedge.
 
         labels : list, default: None
-            A sequence of strings providing the labels for each wedge
+            A sequence of strings providing the legend labels for each wedge.
+
+            .. deprecated:: 3.12
+                In future these labels will not appear on the wedges but only
+                be made available for the legend (see *labeldistance* below).
+                To place labels on the wedges, use *wedge_labels* or the
+                `pie_label` method.
 
         colors : :mpltype:`color` or list of :mpltype:`color`, default: None
             A sequence of colors through which the pie chart will cycle.  If
@@ -3567,11 +3581,34 @@ or pandas.DataFrame
 
             .. versionadded:: 3.7
 
+        wedge_labels : str or list of str, optional
+            A sequence of strings providing the labels for each wedge, or a format
+            string with ``absval`` and/or ``frac`` placeholders.  For example, to label
+            each wedge with its value and the percentage in brackets::
+
+                wedge_labels="{absval:d} ({frac:.0%})"
+
+            For more control or to add multiple sets of labels, use `pie_label`
+            instead.
+
+            .. versionadded:: 3.12
+
+        wedge_label_distance : float, default: 0.6
+            The radial position of the wedge labels, relative to the pie radius.
+            Values > 1 are outside the wedge and values < 1 are inside the wedge.
+
+            .. versionadded:: 3.12
+
         autopct : None or str or callable, default: None
             If not *None*, *autopct* is a string or function used to label the
             wedges with their numeric value. The label will be placed inside
             the wedge. If *autopct* is a format string, the label will be
             ``fmt % pct``. If *autopct* is a function, then it will be called.
+
+            .. admonition:: Discouraged
+
+                Consider using the *wedge_labels* parameter or `pie_label`
+                method instead.
 
         pctdistance : float, default: 0.6
             The relative distance along the radius at which the text
@@ -3584,6 +3621,11 @@ or pandas.DataFrame
             drawn. To draw the labels inside the pie, set  *labeldistance* < 1.
             If set to ``None``, labels are not drawn but are still stored for
             use in `.legend`.
+
+            .. deprecated:: 3.12
+                From v3.14 *labeldistance* will default to ``None`` and will
+                later be removed altogether.  Use *wedge_labels* and
+                *wedge_label_distance* or the `pie_label` method instead.
 
         shadow : bool or dict, default: False
             If bool, whether to draw a shadow beneath the pie. If dict, draw a shadow
@@ -3666,8 +3708,33 @@ or pandas.DataFrame
             raise ValueError('Cannot plot an unnormalized pie with sum(x) > 1')
         else:
             fracs = x
+
+        if labeldistance is _UNSET:
+            # NB: when the labeldistance default changes, both labeldistance and
+            # rotatelabels should be deprecated for removal.
+            if labels is not None:
+                msg = (
+                    "From %(removal)s labeldistance will default to None, so that the "
+                    "strings provided in the labels parameter are only available for "
+                    "the legend.  Later labeldistance will be removed completely.  To "
+                    "preserve existing behavior for now, pass labeldistance=1.1.  "
+                    "Consider using the wedge_labels parameter or the pie_label method "
+                    "instead of the labels parameter."
+                    )
+                _api.warn_deprecated("3.12", message=msg)
+            labeldistance = 1.1
+
         if labels is None:
             labels = [''] * len(x)
+        else:
+            if wedge_labels is not None and labeldistance is not None:
+                raise ValueError(
+                    'wedge_labels is a replacement for labels when annotating the '
+                    'wedges, so the two should not be used together unless '
+                    'labeldistance is None.  To add multiple sets of labels, use the '
+                    'pie_label method.'
+                    )
+
         if explode is None:
             explode = [0] * len(x)
         if len(x) != len(labels):
@@ -3725,11 +3792,16 @@ or pandas.DataFrame
 
         pc = PieContainer(slices, x, normalize)
 
-        if labeldistance is None:
+        if wedge_labels is not None:
+            self.pie_label(pc, wedge_labels, distance=wedge_label_distance,
+                           textprops=textprops)
+
+        elif labeldistance is None:
             # Insert an empty list of texts for backwards compatibility of the
             # return value.
             pc.add_texts([])
-        else:
+
+        if labeldistance is not None:
             # Add labels to the wedges.
             labels_textprops = {
                 'fontsize': mpl.rcParams['xtick.labelsize'],
@@ -3788,7 +3860,7 @@ or pandas.DataFrame
             string with ``absval`` and/or ``frac`` placeholders.  For example, to label
             each wedge with its value and the percentage in brackets::
 
-                wedge_labels="{absval:d} ({frac:.0%})"
+                labels="{absval:d} ({frac:.0%})"
 
         distance : float, default: 0.6
             The radial position of the labels, relative to the pie radius. Values > 1
@@ -3867,7 +3939,6 @@ or pandas.DataFrame
         container.add_texts(texts)
 
         return texts
-
 
     @staticmethod
     def _errorevery_to_mask(x, errorevery):
@@ -3957,11 +4028,8 @@ or pandas.DataFrame
             The linewidth of the errorbar lines. If None, the linewidth of
             the current style is used.
 
-        elinestyle : str or tuple, default: 'solid'
+        elinestyle : :mpltype:`linestyle`, default: 'solid'
            The linestyle of the errorbar lines.
-           Valid values for linestyles include {'-', '--', '-.',
-            ':', '', (offset, on-off-seq)}. See `.Line2D.set_linestyle` for a
-            complete description.
 
         capsize : float, default: :rc:`errorbar.capsize`
             The length of the error bar caps in points.
@@ -4296,7 +4364,6 @@ or pandas.DataFrame
 
     @_api.make_keyword_only("3.10", "notch")
     @_preprocess_data()
-    @_api.rename_parameter("3.9", "labels", "tick_labels")
     def boxplot(self, x, notch=None, sym=None, vert=None,
                 orientation='vertical', whis=None, positions=None,
                 widths=None, patch_artist=None, bootstrap=None,
@@ -4438,8 +4505,7 @@ or pandas.DataFrame
             values.
 
             .. versionchanged:: 3.9
-                Renamed from *labels*, which is deprecated since 3.9
-                and will be removed in 3.11.
+                Renamed from *labels*, which is also removed in 3.11.
 
         manage_ticks : bool, default: True
             If True, the tick locations and labels will be adjusted to match
@@ -6169,6 +6235,11 @@ or pandas.DataFrame
             - (M, N): an image with scalar data. The values are mapped to
               colors using normalization and a colormap. See parameters *norm*,
               *cmap*, *vmin*, *vmax*.
+            - a (K, M, N) scalar array or a structured (M, N) array with K fields.
+              The K channels are mapped to colors using a `.MultiNorm` and a
+              `.BivarColormap` (K=2) or K-component `.MultivarColormap`.
+              This input option is only available when a `.BivarColormap` or
+              `.MultivarColormap` is provided to the *cmap* keyword argument.
             - (M, N, 3): an image with RGB values (0-1 float or 0-255 int).
             - (M, N, 4): an image with RGBA values (0-1 float or 0-255 int),
               i.e. including transparency.
@@ -6178,15 +6249,16 @@ or pandas.DataFrame
 
             Out-of-range RGB(A) values are clipped.
 
-        %(cmap_doc)s
+
+        %(multi_cmap_doc)s
+
+            Scalar colormaps are ignored if *X* is RGB(A).
+
+        %(multi_norm_doc)s
 
             This parameter is ignored if *X* is RGB(A).
 
-        %(norm_doc)s
-
-            This parameter is ignored if *X* is RGB(A).
-
-        %(vmin_vmax_doc)s
+        %(multi_vmin_vmax_doc)s
 
             This parameter is ignored if *X* is RGB(A).
 
@@ -6264,6 +6336,10 @@ or pandas.DataFrame
 
             See :doc:`/gallery/images_contours_and_fields/image_antialiasing` for
             a discussion of image antialiasing.
+
+            When using a `~matplotlib.colors.BivarColormap` or
+            `~matplotlib.colors.MultivarColormap`, 'data' is the only valid
+            interpolation_stage.
 
         alpha : float or array-like, optional
             The alpha blending value, between 0 (transparent) and 1 (opaque).
@@ -6370,6 +6446,7 @@ or pandas.DataFrame
         if aspect is not None:
             self.set_aspect(aspect)
 
+        X = mcolorizer._ensure_multivariate_data(X, im.norm.n_components)
         im.set_data(X)
         im.set_alpha(alpha)
         if im.get_clip_path() is None:
@@ -6525,9 +6602,23 @@ or pandas.DataFrame
 
         Parameters
         ----------
-        C : 2D array-like
-            The color-mapped values.  Color-mapping is controlled by *cmap*,
-            *norm*, *vmin*, and *vmax*.
+        C : 2D or 3D array-like
+            The mesh data. Supported array shapes are:
+
+            - (M, N) or M*N: a mesh with scalar data. The values are mapped to
+              colors using normalization and a colormap. See parameters *norm*,
+              *cmap*, *vmin*, *vmax*.
+            - a (K, M, N) scalar array or a structured (M, N) array with K fields.
+              The K channels are mapped to colors using a `.MultiNorm` and a
+              `.BivarColormap` (K=2) or K-component `.MultivarColormap`.
+              This input option is only available when a `.BivarColormap` or
+              `.MultivarColormap` is provided to the *cmap* keyword argument.
+            - (M, N, 3): an image with RGB values (0-1 float or 0-255 int).
+            - (M, N, 4): an image with RGBA values (0-1 float or 0-255 int),
+              i.e. including transparency.
+
+            The first two dimensions (M, N) define the rows and columns of
+            the mesh data.
 
         X, Y : array-like, optional
             The coordinates of the corners of quadrilaterals of a pcolormesh::
@@ -6543,13 +6634,11 @@ or pandas.DataFrame
             :ref:`Notes <axes-pcolormesh-grid-orientation>` section below.
 
             If ``shading='flat'`` the dimensions of *X* and *Y* should be one
-            greater than those of *C*, and the quadrilateral is colored due
-            to the value at ``C[i, j]``.  If *X*, *Y* and *C* have equal
-            dimensions, a warning will be raised and the last row and column
-            of *C* will be ignored.
+            greater than those of *C*, otherwise a TypeError is raised.  The
+            quadrilateral is colored due to the value at ``C[i, j]``.
 
             If ``shading='nearest'``, the dimensions of *X* and *Y* should be
-            the same as those of *C* (if not, a ValueError will be raised). The
+            the same as those of *C* (if not, a TypeError will be raised). The
             color ``C[i, j]`` will be centered on ``(X[i, j], Y[i, j])``.
 
             If *X* and/or *Y* are 1-D arrays or column vectors they will be
@@ -6562,9 +6651,7 @@ or pandas.DataFrame
             - 'flat': A solid color is used for each quad. The color of the
               quad (i, j), (i+1, j), (i, j+1), (i+1, j+1) is given by
               ``C[i, j]``. The dimensions of *X* and *Y* should be
-              one greater than those of *C*; if they are the same as *C*,
-              then a deprecation warning is raised, and the last row
-              and column of *C* are dropped.
+              one greater than those of *C*.
             - 'nearest': Each grid point will have a color centered on it,
               extending halfway between the adjacent grid centers.  The
               dimensions of *X* and *Y* must be the same as *C*.
@@ -6574,11 +6661,11 @@ or pandas.DataFrame
             See :doc:`/gallery/images_contours_and_fields/pcolormesh_grids`
             for more description.
 
-        %(cmap_doc)s
+        %(multi_cmap_doc)s
 
-        %(norm_doc)s
+        %(multi_norm_doc)s
 
-        %(vmin_vmax_doc)s
+        %(multi_vmin_vmax_doc)s
 
         %(colorizer_doc)s
 
@@ -6653,8 +6740,19 @@ or pandas.DataFrame
         if shading is None:
             shading = mpl.rcParams['pcolor.shading']
         shading = shading.lower()
-        X, Y, C, shading = self._pcolorargs('pcolor', *args, shading=shading,
-                                            kwargs=kwargs)
+
+        mcolorizer.ColorizingArtist._check_exclusionary_keywords(colorizer,
+                                                                 vmin=vmin, vmax=vmax,
+                                                                 norm=norm, cmap=cmap)
+        if colorizer is None:
+            colorizer = mcolorizer.Colorizer(cmap=cmap, norm=norm)
+
+        C = mcolorizer._ensure_multivariate_data(args[-1],
+                                                 colorizer.cmap.n_variates)
+
+        X, Y, C, shading = self._pcolorargs('pcolor', *args[:-1], C,
+                                            shading=shading, kwargs=kwargs)
+
         linewidths = (0.25,)
         if 'linewidth' in kwargs:
             kwargs['linewidths'] = kwargs.pop('linewidth')
@@ -6689,9 +6787,7 @@ or pandas.DataFrame
         coords = stack([X, Y], axis=-1)
 
         collection = mcoll.PolyQuadMesh(
-            coords, array=C, cmap=cmap, norm=norm, colorizer=colorizer,
-            alpha=alpha, **kwargs)
-        collection._check_exclusionary_keywords(colorizer, vmin=vmin, vmax=vmax)
+            coords, array=C, colorizer=colorizer, alpha=alpha, **kwargs)
         collection._scale_norm(norm, vmin, vmax)
 
         coords = coords.reshape(-1, 2)  # flatten the grid structure; keep x, y
@@ -6729,6 +6825,11 @@ or pandas.DataFrame
             - (M, N) or M*N: a mesh with scalar data. The values are mapped to
               colors using normalization and a colormap. See parameters *norm*,
               *cmap*, *vmin*, *vmax*.
+            - a (K, M, N) scalar array or a structured (M, N) array with K fields.
+              The K channels are mapped to colors using a `.MultiNorm` and a
+              `.BivarColormap` (K=2) or K-component `.MultivarColormap`.
+              This input option is only available when a `.BivarColormap` or
+              `.MultivarColormap` is provided to the *cmap* keyword argument.
             - (M, N, 3): an image with RGB values (0-1 float or 0-255 int).
             - (M, N, 4): an image with RGBA values (0-1 float or 0-255 int),
               i.e. including transparency.
@@ -6750,13 +6851,11 @@ or pandas.DataFrame
             :ref:`Notes <axes-pcolormesh-grid-orientation>` section below.
 
             If ``shading='flat'`` the dimensions of *X* and *Y* should be one
-            greater than those of *C*, and the quadrilateral is colored due
-            to the value at ``C[i, j]``.  If *X*, *Y* and *C* have equal
-            dimensions, a warning will be raised and the last row and column
-            of *C* will be ignored.
+            greater than those of *C*, otherwise a TypeError is raised. The
+            quadrilateral is colored due to the value at ``C[i, j]``.
 
             If ``shading='nearest'`` or ``'gouraud'``, the dimensions of *X*
-            and *Y* should be the same as those of *C* (if not, a ValueError
+            and *Y* should be the same as those of *C* (if not, a TypeError
             will be raised).  For ``'nearest'`` the color ``C[i, j]`` is
             centered on ``(X[i, j], Y[i, j])``.  For ``'gouraud'``, a smooth
             interpolation is carried out between the quadrilateral corners.
@@ -6765,11 +6864,11 @@ or pandas.DataFrame
             expanded as needed into the appropriate 2D arrays, making a
             rectangular grid.
 
-        %(cmap_doc)s
+        %(multi_cmap_doc)s
 
-        %(norm_doc)s
+        %(multi_norm_doc)s
 
-        %(vmin_vmax_doc)s
+        %(multi_vmin_vmax_doc)s
 
         %(colorizer_doc)s
 
@@ -6794,9 +6893,7 @@ or pandas.DataFrame
             - 'flat': A solid color is used for each quad. The color of the
               quad (i, j), (i+1, j), (i, j+1), (i+1, j+1) is given by
               ``C[i, j]``. The dimensions of *X* and *Y* should be
-              one greater than those of *C*; if they are the same as *C*,
-              then a deprecation warning is raised, and the last row
-              and column of *C* are dropped.
+              one greater than those of *C*.
             - 'nearest': Each grid point will have a color centered on it,
               extending halfway between the adjacent grid centers.  The
               dimensions of *X* and *Y* must be the same as *C*.
@@ -6895,7 +6992,16 @@ or pandas.DataFrame
         shading = mpl._val_or_rc(shading, 'pcolor.shading').lower()
         kwargs.setdefault('edgecolors', 'none')
 
-        X, Y, C, shading = self._pcolorargs('pcolormesh', *args,
+        mcolorizer.ColorizingArtist._check_exclusionary_keywords(colorizer,
+                                                                 vmin=vmin, vmax=vmax,
+                                                                 norm=norm, cmap=cmap)
+        if colorizer is None:
+            colorizer = mcolorizer.Colorizer(cmap=cmap, norm=norm)
+
+        C = mcolorizer._ensure_multivariate_data(args[-1],
+                                                 colorizer.cmap.n_variates)
+
+        X, Y, C, shading = self._pcolorargs('pcolormesh', *args[:-1], C,
                                             shading=shading, kwargs=kwargs)
         coords = np.stack([X, Y], axis=-1)
 
@@ -6903,8 +7009,7 @@ or pandas.DataFrame
 
         collection = mcoll.QuadMesh(
             coords, antialiased=antialiased, shading=shading,
-            array=C, cmap=cmap, norm=norm, colorizer=colorizer, alpha=alpha, **kwargs)
-        collection._check_exclusionary_keywords(colorizer, vmin=vmin, vmax=vmax)
+            array=C, colorizer=colorizer, alpha=alpha, **kwargs)
         collection._scale_norm(norm, vmin, vmax)
 
         coords = coords.reshape(-1, 2)  # flatten the grid structure; keep x, y
@@ -7757,8 +7862,12 @@ such objects
         if edges is None:
             edges = np.arange(len(values) + 1)
 
-        edges, values, baseline = self._process_unit_info(
-            [("x", edges), ("y", values), ("y", baseline)], kwargs)
+        if orientation == "vertical":
+            edges, values, baseline = self._process_unit_info(
+                [("x", edges), ("y", values), ("y", baseline)], kwargs)
+        else:
+            edges, values, baseline = self._process_unit_info(
+                [("y", edges), ("x", values), ("x", baseline)], kwargs)
 
         patch = mpatches.StepPatch(values,
                                    edges,
@@ -8005,7 +8114,8 @@ such objects
     @_docstring.interpd
     def psd(self, x, NFFT=None, Fs=None, Fc=None, detrend=None,
             window=None, noverlap=None, pad_to=None,
-            sides=None, scale_by_freq=None, return_line=None, **kwargs):
+            sides=None, scale_by_freq=None, return_line=None, Funits=None,
+            **kwargs):
         r"""
         Plot the power spectral density.
 
@@ -8038,6 +8148,12 @@ such objects
 
         return_line : bool, default: False
             Whether to include the line object plotted in the returned values.
+
+        Funits : str, default: 'Hz'
+            Units for the sampling frequency *Fs*. It is used to label the
+            xaxis and yaxis.
+
+            .. versionadded:: 3.12
 
         Returns
         -------
@@ -8086,6 +8202,8 @@ such objects
         """
         if Fc is None:
             Fc = 0
+        if Funits is None:
+            Funits = 'Hz'
 
         pxx, freqs = mlab.psd(x=x, NFFT=NFFT, Fs=Fs, detrend=detrend,
                               window=window, noverlap=noverlap, pad_to=pad_to,
@@ -8093,12 +8211,12 @@ such objects
         freqs += Fc
 
         if scale_by_freq in (None, True):
-            psd_units = 'dB/Hz'
+            psd_units = 'dB/%s' % Funits
         else:
             psd_units = 'dB'
 
         line = self.plot(freqs, 10 * np.log10(pxx), **kwargs)
-        self.set_xlabel('Frequency')
+        self.set_xlabel('Frequency (%s)' % Funits)
         self.set_ylabel('Power Spectral Density (%s)' % psd_units)
         self.grid(True)
 
@@ -8846,6 +8964,9 @@ such objects
 
         """
         Z = np.asanyarray(Z)
+        if Z.ndim != 2:
+            if Z.ndim != 3 or Z.shape[2] not in (1, 3, 4):
+                raise TypeError(f"Invalid shape {Z.shape} for image data")
         kw = {'origin': 'upper',
               'interpolation': 'nearest',
               'aspect': 'equal',          # (already the imshow default)
@@ -8883,6 +9004,8 @@ such objects
             - 1D array: A single violin is drawn.
             - sequence of 1D arrays: A violin is drawn for each array in the sequence.
             - 2D array: A violin is drawn for each column in the array.
+
+            Non-finite and masked values are ignored.
 
         positions : array-like, default: [1, 2, ..., n]
             The positions of the violins; i.e. coordinates on the x-axis for
@@ -9255,7 +9378,8 @@ such objects
         for stats, pos, width, facecolor in bodies_zip:
             # The 0.5 factor reflects the fact that we plot from v-p to v+p.
             vals = np.array(stats['vals'])
-            vals = 0.5 * width * vals / vals.max()
+            if len(vals) > 0:
+                vals = 0.5 * width * vals / vals.max()
             bodies += [fill(stats['coords'],
                             -vals + pos if side in ['both', 'low'] else pos,
                             vals + pos if side in ['both', 'high'] else pos,

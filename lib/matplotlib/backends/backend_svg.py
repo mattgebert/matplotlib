@@ -14,7 +14,8 @@ import numpy as np
 from PIL import Image
 
 import matplotlib as mpl
-from matplotlib import cbook, font_manager as fm
+from matplotlib import _api, cbook, font_manager as fm
+from matplotlib.artist import BlendMode
 from matplotlib.backend_bases import (
      _Backend, FigureCanvasBase, FigureManagerBase, RendererBase)
 from matplotlib.backends.backend_mixed import MixedModeRenderer
@@ -299,6 +300,32 @@ def _check_is_iterable_of_str(infos, key):
                         f'iterable of str, not {type(infos)}.')
 
 
+def _svg_blend_mode(mpl_blend_mode):
+    supported_blend_modes = {
+        "normal": "normal",
+        "multiply": "multiply",
+        "screen": "screen",
+        "overlay": "overlay",
+        "darken": "darken",
+        "lighten": "lighten",
+        "color dodge": "color-dodge",
+        "color burn": "color-burn",
+        "hard light": "hard-light",
+        "soft light": "soft-light",
+        "difference": "difference",
+        "exclusion": "exclusion",
+        "hue": "hue",
+        "saturation": "saturation",
+        "color": "color",
+        "luminosity": "luminosity",
+    }
+    if mpl_blend_mode in supported_blend_modes:
+        return supported_blend_modes[mpl_blend_mode]
+    _log.warning(f"The '{mpl_blend_mode}' blend mode is not supported by the SVG "
+                 f"backend. Falling back to the 'normal' blend mode.")
+    return "normal"
+
+
 class RendererSVG(RendererBase):
     def __init__(self, width, height, svgwriter, basename=None, image_dpi=72,
                  *, metadata=None):
@@ -322,6 +349,7 @@ class RendererSVG(RendererBase):
         self._hatchd = {}
         self._has_gouraud = False
         self._n_gradients = 0
+        self._group_states = []
 
         super().__init__()
         self._glyph_map = dict()
@@ -590,6 +618,10 @@ class RendererSVG(RendererBase):
 
         if forced_alpha and gc.get_alpha() != 1.0:
             attrib['opacity'] = _short_float_fmt(gc.get_alpha())
+        if (blend_mode := _svg_blend_mode(gc.get_blend_mode())) != "normal":
+            attrib["mix-blend-mode"] = blend_mode
+        if (fill_rule := gc.get_fill_rule()) != "nonzero":
+            attrib["fill-rule"] = fill_rule
 
         offset, seq = gc.get_dashes()
         if seq is not None:
@@ -638,6 +670,11 @@ class RendererSVG(RendererBase):
             _, oid = clip
         return {'clip-path': f'url(#{oid})'}
 
+    def _get_blendmode_attr(self, gc):
+        if (blend_mode := _svg_blend_mode(gc.get_blend_mode())) != "normal":
+            return {"style": f"mix-blend-mode: {blend_mode}"}
+        return {}
+
     def _write_clips(self):
         if not len(self._clipd):
             return
@@ -661,16 +698,50 @@ class RendererSVG(RendererBase):
             writer.end('clipPath')
         writer.end('defs')
 
+    def _open_group(self, group_type, s, *, gid=None, blend_mode=None, alpha=None):
+        self._group_states.append((group_type, s))
+        if gid is None:
+            self._groupd[s] = self._groupd.get(s, 0) + 1
+            gid = f"{s}_{self._groupd[s]:d}"
+
+        attrib = {'id': gid}
+        if blend_mode is not None and alpha is not None:
+            attrib['style'] = ("isolation: isolate; "
+                               f"mix-blend-mode: {_svg_blend_mode(blend_mode)}; "
+                               f"opacity: {alpha}")
+
+        self.writer.start('g', attrib=attrib)
+
     def open_group(self, s, gid=None):
         # docstring inherited
-        if gid:
-            self.writer.start('g', id=gid)
-        else:
-            self._groupd[s] = self._groupd.get(s, 0) + 1
-            self.writer.start('g', id=f"{s}_{self._groupd[s]:d}")
+        self._open_group('group', s, gid=gid)
 
     def close_group(self, s):
         # docstring inherited
+        group_type, current_s = self._group_states.pop()
+        if s != current_s:
+            raise RuntimeError(f"Cannot close group element '{s}' because the open "
+                               f"group element is '{current_s}'.")
+        if group_type != 'group':
+            raise RuntimeError(f"Cannot close group element '{s}' because it includes "
+                               "a blend group that has not been closed.")
+        self.writer.end('g')
+
+    def open_blend_group(self, blend_mode, *, alpha=1, knockout=False):
+        # docstring inherited
+        if blend_mode is not None:
+            _api.check_in_list(BlendMode, blend_mode=blend_mode)
+        if knockout:
+            _log.warning("Knockout blend groups are not supported by the SVG backend. "
+                         "Falling back to a non-knockout blend group.")
+        self._open_group('blend', 'mplblend', blend_mode=blend_mode, alpha=alpha)
+
+    def close_blend_group(self):
+        # docstring inherited
+        group_type, s = self._group_states.pop()
+        if group_type != 'blend':
+            raise RuntimeError("Cannot close the blend group because group element "
+                               f"'{s}' is in the group and has not been closed.")
         self.writer.end('g')
 
     def option_image_nocomposite(self):
@@ -697,7 +768,7 @@ class RendererSVG(RendererBase):
             sketch=gc.get_sketch_params())
 
         if gc.get_url() is not None:
-            self.writer.start('a', {'xlink:href': gc.get_url()})
+            self.writer.start('a', {'xlink:href': gc.get_url(), 'target': '_blank'})
         self.writer.element('path', d=path_data, **self._get_clip_attrs(gc),
                             style=self._get_style(gc, rgbFace))
         if gc.get_url() is not None:
@@ -728,9 +799,9 @@ class RendererSVG(RendererBase):
             writer.end('defs')
             self._markers[dictkey] = oid
 
-        writer.start('g', **self._get_clip_attrs(gc))
+        writer.start('g', **self._get_clip_attrs(gc), **self._get_blendmode_attr(gc))
         if gc.get_url() is not None:
-            self.writer.start('a', {'xlink:href': gc.get_url()})
+            self.writer.start('a', {'xlink:href': gc.get_url(), 'target': '_blank'})
         trans_and_flip = self._make_flip_transform(trans)
         attrib = {'xlink:href': f'#{oid}'}
         clip = (0, 0, self.width*72, self.height*72)
@@ -788,10 +859,11 @@ class RendererSVG(RendererBase):
                 antialiaseds, urls, offset_position, hatchcolors=hatchcolors):
             url = gc0.get_url()
             if url is not None:
-                writer.start('a', attrib={'xlink:href': url})
+                writer.start('a', attrib={'xlink:href': url, 'target': '_blank'})
             clip_attrs = self._get_clip_attrs(gc0)
-            if clip_attrs:
-                writer.start('g', **clip_attrs)
+            blendmode_attr = self._get_blendmode_attr(gc0)
+            if clip_attrs or blendmode_attr:
+                writer.start('g', **clip_attrs, **blendmode_attr)
             attrib = {
                 'xlink:href': f'#{path_id}',
                 'x': _short_float_fmt(xo),
@@ -913,7 +985,7 @@ class RendererSVG(RendererBase):
     def draw_gouraud_triangles(self, gc, triangles_array, colors_array,
                                transform):
         writer = self.writer
-        writer.start('g', **self._get_clip_attrs(gc))
+        writer.start('g', **self._get_clip_attrs(gc), **self._get_blendmode_attr(gc))
         transform = transform.frozen()
         trans_and_flip = self._make_flip_transform(transform)
 
@@ -959,14 +1031,15 @@ class RendererSVG(RendererBase):
             return
 
         clip_attrs = self._get_clip_attrs(gc)
-        if clip_attrs:
+        blendmode_attr = self._get_blendmode_attr(gc)
+        if clip_attrs or blendmode_attr:
             # Can't apply clip-path directly to the image because the image has
             # a transformation, which would also be applied to the clip-path.
-            self.writer.start('g', **clip_attrs)
+            self.writer.start('g', **clip_attrs, **blendmode_attr)
 
         url = gc.get_url()
         if url is not None:
-            self.writer.start('a', attrib={'xlink:href': url})
+            self.writer.start('a', attrib={'xlink:href': url, 'target': '_blank'})
 
         attrib = {}
         oid = gc.get_gid()
@@ -1029,19 +1102,19 @@ class RendererSVG(RendererBase):
         writer = self.writer
         if glyph_map_new:
             writer.start('defs')
-            for char_id, (vertices, codes) in glyph_map_new.items():
-                char_id = self._adjust_char_id(char_id)
+            for glyph_repr, (vertices, codes) in glyph_map_new.items():
+                glyph_repr = self._adjust_glyph_repr(glyph_repr)
                 # x64 to go back to FreeType's internal (integral) units.
                 path_data = self._convert_path(
                     Path(vertices * 64, codes), simplify=False)
                 writer.element(
-                    'path', id=char_id, d=path_data,
+                    'path', id=glyph_repr, d=path_data,
                     transform=_generate_transform([('scale', (1 / 64,))]))
             writer.end('defs')
             self._glyph_map.update(glyph_map_new)
 
-    def _adjust_char_id(self, char_id):
-        return char_id.replace("%20", "_")
+    def _adjust_glyph_repr(self, glyph_repr):
+        return glyph_repr.replace("%20", "_")
 
     def _draw_text_as_path(self, gc, x, y, s, prop, angle, ismath, mtext=None):
         # docstring inherited
@@ -1054,6 +1127,11 @@ class RendererSVG(RendererBase):
         text2path = self._text2path
         color = rgb2hex(gc.get_rgb())
         fontsize = prop.get_size_in_points()
+        if mtext is not None:
+            features = mtext.get_fontfeatures()
+            language = mtext.get_language()
+        else:
+            features = language = None
 
         style = {}
         if color != '#000000':
@@ -1074,19 +1152,19 @@ class RendererSVG(RendererBase):
 
         if not ismath:
             font = text2path._get_font(prop)
-            _glyphs = text2path.get_glyphs_with_font(
-                font, s, glyph_map=glyph_map, return_new_glyphs_only=True)
-            glyph_info, glyph_map_new, rects = _glyphs
+            glyph_info, glyph_map_new, rects = text2path.get_glyphs_with_font(
+                font, s, features=features, language=language,
+                glyph_map=glyph_map, return_new_glyphs_only=True)
             self._update_glyph_map_defs(glyph_map_new)
 
-            for glyph_id, xposition, yposition, scale in glyph_info:
+            for glyph_repr, xposition, yposition, scale in glyph_info:
                 writer.element(
                     'use',
                     transform=_generate_transform([
                         ('translate', (xposition, yposition)),
                         ('scale', (scale,)),
                         ]),
-                    attrib={'xlink:href': f'#{glyph_id}'})
+                    attrib={'xlink:href': f'#{glyph_repr}'})
 
         else:
             if ismath == "TeX":
@@ -1098,15 +1176,15 @@ class RendererSVG(RendererBase):
             glyph_info, glyph_map_new, rects = _glyphs
             self._update_glyph_map_defs(glyph_map_new)
 
-            for char_id, xposition, yposition, scale in glyph_info:
-                char_id = self._adjust_char_id(char_id)
+            for glyph_repr, xposition, yposition, scale in glyph_info:
+                glyph_repr = self._adjust_glyph_repr(glyph_repr)
                 writer.element(
                     'use',
                     transform=_generate_transform([
                         ('translate', (xposition, yposition)),
                         ('scale', (scale,)),
                         ]),
-                    attrib={'xlink:href': f'#{char_id}'})
+                    attrib={'xlink:href': f'#{glyph_repr}'})
 
             for verts, codes in rects:
                 path = Path(verts, codes)
@@ -1231,7 +1309,7 @@ class RendererSVG(RendererBase):
 
             # Sort the characters by font, and output one tspan for each.
             spans = {}
-            for font, fontsize, thetext, new_x, new_y in glyphs:
+            for font, fontsize, ccode, glyph_index, new_x, new_y in glyphs:
                 entry = fm.ttfFontProperty(font)
                 font_style = {}
                 # Separate font style in its separate attributes
@@ -1246,9 +1324,9 @@ class RendererSVG(RendererBase):
                 if entry.stretch != 'normal':
                     font_style['font-stretch'] = entry.stretch
                 style = _generate_css({**font_style, **color_style})
-                if thetext == 32:
-                    thetext = 0xa0  # non-breaking space
-                spans.setdefault(style, []).append((new_x, -new_y, thetext))
+                if ccode == 32:
+                    ccode = 0xa0  # non-breaking space
+                spans.setdefault(style, []).append((new_x, -new_y, ccode))
 
             for style, chars in spans.items():
                 chars.sort()  # Sort by increasing x position
@@ -1277,13 +1355,14 @@ class RendererSVG(RendererBase):
         # docstring inherited
 
         clip_attrs = self._get_clip_attrs(gc)
-        if clip_attrs:
+        blendmode_attr = self._get_blendmode_attr(gc)
+        if clip_attrs or blendmode_attr:
             # Cannot apply clip-path directly to the text, because
             # it has a transformation
-            self.writer.start('g', **clip_attrs)
+            self.writer.start('g', **clip_attrs, **blendmode_attr)
 
         if gc.get_url() is not None:
-            self.writer.start('a', {'xlink:href': gc.get_url()})
+            self.writer.start('a', {'xlink:href': gc.get_url(), 'target': '_blank'})
 
         if mpl.rcParams['svg.fonttype'] == 'path':
             self._draw_text_as_path(gc, x, y, s, prop, angle, ismath, mtext)
@@ -1366,7 +1445,8 @@ class FigureCanvasSVG(FigureCanvasBase):
               gzip.GzipFile(mode='w', fileobj=fh) as gzipwriter):
             return self.print_svg(gzipwriter, **kwargs)
 
-    def get_default_filetype(self):
+    @classmethod
+    def get_default_filetype(cls):
         return 'svg'
 
     def draw(self):

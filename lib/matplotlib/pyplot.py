@@ -60,6 +60,7 @@ from cycler import cycler  # noqa: F401
 import matplotlib
 import matplotlib.image
 from matplotlib import _api
+from matplotlib._api import UNSET as _UNSET
 # Re-exported (import x as x) for typing.
 from matplotlib import get_backend as get_backend, rcParams as rcParams
 from matplotlib import cm as cm  # noqa: F401
@@ -83,7 +84,11 @@ from matplotlib import mlab  # for detrend_none, window_hanning
 from matplotlib.scale import get_scale_names  # noqa: F401
 
 from matplotlib.cm import _colormaps
-from matplotlib.colors import _color_sequences, Colormap
+from matplotlib.colors import (_color_sequences,
+                               Colormap,
+                               BivarColormap,
+                               MultivarColormap,
+                              )
 
 import numpy as np
 
@@ -91,8 +96,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Hashable, Iterable, Sequence
     import pathlib
     import os
-    from typing import Any, BinaryIO, Literal, TypeVar
-    from typing_extensions import ParamSpec
+    from typing import Any, BinaryIO, Literal
 
     import PIL.Image
     from numpy.typing import ArrayLike
@@ -140,6 +144,7 @@ if TYPE_CHECKING:
         CloseEventType,
         ColorType,
         CoordsType,
+        DataParamType,
         DrawEventType,
         HashableList,
         KeyEventType,
@@ -153,14 +158,11 @@ if TYPE_CHECKING:
         LogLevel
     )
     from matplotlib.widgets import SubplotTool
-
-    _P = ParamSpec('_P')
-    _R = TypeVar('_R')
-    _T = TypeVar('_T')
+    from matplotlib._api import _Unset
 
 
 # We may not need the following imports here:
-from matplotlib.colors import Normalize
+from matplotlib.colors import Norm, Normalize
 from matplotlib.lines import Line2D, AxLine
 from matplotlib.text import Text, Annotation
 from matplotlib.patches import Arrow, Circle, Rectangle  # noqa: F401
@@ -182,25 +184,25 @@ color_sequences = _color_sequences
 
 
 @overload
-def _copy_docstring_and_deprecators(
+def _copy_docstring_and_deprecators[**P, R](
     method: Any,
     func: Literal[None] = None
-) -> Callable[[Callable[_P, _R]], Callable[_P, _R]]: ...
+) -> Callable[[Callable[P, R]], Callable[P, R]]: ...
 
 
 @overload
-def _copy_docstring_and_deprecators(
-    method: Any, func: Callable[_P, _R]) -> Callable[_P, _R]: ...
+def _copy_docstring_and_deprecators[**P, R](
+    method: Any, func: Callable[P, R]) -> Callable[P, R]: ...
 
 
-def _copy_docstring_and_deprecators(
+def _copy_docstring_and_deprecators[**P, R](
     method: Any,
-    func: Callable[_P, _R] | None = None
-) -> Callable[[Callable[_P, _R]], Callable[_P, _R]] | Callable[_P, _R]:
+    func: Callable[P, R] | None = None
+) -> Callable[[Callable[P, R]], Callable[P, R]] | Callable[P, R]:
     if func is None:
-        return cast('Callable[[Callable[_P, _R]], Callable[_P, _R]]',
+        return cast('Callable[[Callable[P, R]], Callable[P, R]]',
                     functools.partial(_copy_docstring_and_deprecators, method))
-    decorators: list[Callable[[Callable[_P, _R]], Callable[_P, _R]]] = [
+    decorators: list[Callable[[Callable[P, R]], Callable[P, R]]] = [
         _docstring.copy(method)
     ]
     # Check whether the definition of *method* includes @_api.rename_parameter
@@ -427,6 +429,8 @@ def switch_backend(newbackend: str) -> None:
             try:
                 switch_backend(candidate)
             except ImportError:
+                _log.debug("Skipping backend candidate %r as loading failed.",
+                           candidate, exc_info=True)
                 continue
             else:
                 rcParamsOrig['backend'] = candidate
@@ -870,7 +874,7 @@ def xkcd(
             "xkcd mode is not compatible with text.usetex = True")
 
     stack = ExitStack()
-    stack.callback(rcParams._update_raw, rcParams.copy())  # type: ignore[arg-type]
+    stack.callback(rcParams._update_raw, rcParams.copy())
 
     from matplotlib import patheffects
     rcParams.update({
@@ -943,9 +947,12 @@ def figure(
     figsize : (float, float) or (float, float, str), default: :rc:`figure.figsize`
         The figure dimensions. This can be
 
-        - a tuple ``(width, height, unit)``, where *unit* is one of "inch", "cm",
-          "px".
-        - a tuple ``(x, y)``, which is interpreted as ``(x, y, "inch")``.
+        - a tuple ``(width, height, unit)``, where *unit* is one of "in", "cm",
+          "mm", "px".
+        - a tuple ``(x, y)``, which is interpreted as ``(x, y, "in")``.
+
+        One of *width* or *height* may be ``None``; the respective value is taken
+        from :rc:`figure.figsize`.
 
     dpi : float, default: :rc:`figure.dpi`
         The resolution of the figure in dots-per-inch.
@@ -1074,8 +1081,7 @@ default: None
         else:
             num = int(num)  # crude validation of num argument
 
-    # Type of "num" has narrowed to int, but mypy can't quite see it
-    manager = _pylab_helpers.Gcf.get_fig_manager(num)  # type: ignore[arg-type]
+    manager = _pylab_helpers.Gcf.get_fig_manager(num)
     if manager is None:
         max_open_warning = rcParams['figure.max_open_warning']
         if len(allnums) == max_open_warning >= 1:
@@ -1464,7 +1470,7 @@ def sca(ax: Axes) -> None:
     # but if you are calling this, it won't be None
     # Additionally the slight difference between `Figure` and `FigureBase` mypy catches
     fig = ax.get_figure(root=False)
-    figure(fig)  # type: ignore[arg-type]
+    figure(fig)
     fig.sca(ax)  # type: ignore[union-attr]
 
 
@@ -1903,19 +1909,19 @@ def subplot_mosaic(
 
 
 @overload
-def subplot_mosaic(
-    mosaic: list[HashableList[_T]],
+def subplot_mosaic[T](
+    mosaic: list[HashableList[T]],
     *,
     sharex: bool = ...,
     sharey: bool = ...,
     width_ratios: ArrayLike | None = ...,
     height_ratios: ArrayLike | None = ...,
-    empty_sentinel: _T = ...,
+    empty_sentinel: T = ...,
     subplot_kw: dict[str, Any] | None = ...,
     gridspec_kw: dict[str, Any] | None = ...,
-    per_subplot_kw: dict[_T | tuple[_T, ...], dict[str, Any]] | None = ...,
+    per_subplot_kw: dict[T | tuple[T, ...], dict[str, Any]] | None = ...,
     **fig_kw: Any
-) -> tuple[Figure, dict[_T, matplotlib.axes.Axes]]: ...
+) -> tuple[Figure, dict[T, matplotlib.axes.Axes]]: ...
 
 
 @overload
@@ -1934,8 +1940,8 @@ def subplot_mosaic(
 ) -> tuple[Figure, dict[Hashable, matplotlib.axes.Axes]]: ...
 
 
-def subplot_mosaic(
-    mosaic: str | list[HashableList[_T]] | list[HashableList[Hashable]],
+def subplot_mosaic[T](
+    mosaic: str | list[HashableList[T]] | list[HashableList[Hashable]],
     *,
     sharex: bool = False,
     sharey: bool = False,
@@ -1945,11 +1951,11 @@ def subplot_mosaic(
     subplot_kw: dict[str, Any] | None = None,
     gridspec_kw: dict[str, Any] | None = None,
     per_subplot_kw: dict[str | tuple[str, ...], dict[str, Any]] |
-                    dict[_T | tuple[_T, ...], dict[str, Any]] |
+                    dict[T | tuple[T, ...], dict[str, Any]] |
                     dict[Hashable | tuple[Hashable, ...], dict[str, Any]] | None = None,
     **fig_kw: Any
 ) -> tuple[Figure, dict[str, matplotlib.axes.Axes]] | \
-     tuple[Figure, dict[_T, matplotlib.axes.Axes]] | \
+     tuple[Figure, dict[T, matplotlib.axes.Axes]] | \
      tuple[Figure, dict[Hashable, matplotlib.axes.Axes]]:
     """
     Build a layout of Axes based on ASCII art or nested lists.
@@ -2996,7 +3002,7 @@ def waitforbuttonpress(timeout: float = -1) -> None | bool:
 # Autogenerated by boilerplate.py.  Do not edit as changes will be lost.
 @_copy_docstring_and_deprecators(Axes.acorr)
 def acorr(
-    x: ArrayLike, *, data=None, **kwargs
+    x: ArrayLike, *, data: DataParamType = None, **kwargs
 ) -> tuple[np.ndarray, np.ndarray, LineCollection | Line2D, Line2D | None]:
     return gca().acorr(x, **({"data": data} if data is not None else {}), **kwargs)
 
@@ -3011,7 +3017,7 @@ def angle_spectrum(
     pad_to: int | None = None,
     sides: Literal["default", "onesided", "twosided"] | None = None,
     *,
-    data=None,
+    data: DataParamType = None,
     **kwargs,
 ) -> tuple[np.ndarray, np.ndarray, Line2D]:
     return gca().angle_spectrum(
@@ -3030,8 +3036,8 @@ def angle_spectrum(
 @_copy_docstring_and_deprecators(Axes.annotate)
 def annotate(
     text: str,
-    xy: tuple[float, float],
-    xytext: tuple[float, float] | None = None,
+    xy: tuple[Any, Any],
+    xytext: tuple[Any, Any] | None = None,
     xycoords: CoordsType = "data",
     textcoords: CoordsType | None = None,
     arrowprops: dict[str, Any] | None = None,
@@ -3127,7 +3133,7 @@ def bar(
     bottom: float | ArrayLike | None = None,
     *,
     align: Literal["center", "edge"] = "center",
-    data=None,
+    data: DataParamType = None,
     **kwargs,
 ) -> BarContainer:
     return gca().bar(
@@ -3143,7 +3149,7 @@ def bar(
 
 # Autogenerated by boilerplate.py.  Do not edit as changes will be lost.
 @_copy_docstring_and_deprecators(Axes.barbs)
-def barbs(*args, data=None, **kwargs) -> Barbs:
+def barbs(*args, data: DataParamType = None, **kwargs) -> Barbs:
     return gca().barbs(*args, **({"data": data} if data is not None else {}), **kwargs)
 
 
@@ -3156,7 +3162,7 @@ def barh(
     left: float | ArrayLike | None = None,
     *,
     align: Literal["center", "edge"] = "center",
-    data=None,
+    data: DataParamType = None,
     **kwargs,
 ) -> BarContainer:
     return gca().barh(
@@ -3224,7 +3230,7 @@ def boxplot(
     capwidths: float | ArrayLike | None = None,
     label: Sequence[str] | None = None,
     *,
-    data=None,
+    data: DataParamType = None,
 ) -> dict[str, Any]:
     return gca().boxplot(
         x,
@@ -3267,7 +3273,7 @@ def broken_barh(
     yrange: tuple[float, float],
     align: Literal["bottom", "center", "top"] = "bottom",
     *,
-    data=None,
+    data: DataParamType = None,
     **kwargs,
 ) -> PolyCollection:
     return gca().broken_barh(
@@ -3302,7 +3308,7 @@ def cohere(
     sides: Literal["default", "onesided", "twosided"] = "default",
     scale_by_freq: bool | None = None,
     *,
-    data=None,
+    data: DataParamType = None,
     **kwargs,
 ) -> tuple[np.ndarray, np.ndarray]:
     return gca().cohere(
@@ -3324,7 +3330,7 @@ def cohere(
 
 # Autogenerated by boilerplate.py.  Do not edit as changes will be lost.
 @_copy_docstring_and_deprecators(Axes.contour)
-def contour(*args, data=None, **kwargs) -> QuadContourSet:
+def contour(*args, data: DataParamType = None, **kwargs) -> QuadContourSet:
     __ret = gca().contour(
         *args, **({"data": data} if data is not None else {}), **kwargs
     )
@@ -3335,7 +3341,7 @@ def contour(*args, data=None, **kwargs) -> QuadContourSet:
 
 # Autogenerated by boilerplate.py.  Do not edit as changes will be lost.
 @_copy_docstring_and_deprecators(Axes.contourf)
-def contourf(*args, data=None, **kwargs) -> QuadContourSet:
+def contourf(*args, data: DataParamType = None, **kwargs) -> QuadContourSet:
     __ret = gca().contourf(
         *args, **({"data": data} if data is not None else {}), **kwargs
     )
@@ -3362,7 +3368,7 @@ def csd(
     scale_by_freq: bool | None = None,
     return_line: bool | None = None,
     *,
-    data=None,
+    data: DataParamType = None,
     **kwargs,
 ) -> tuple[np.ndarray, np.ndarray] | tuple[np.ndarray, np.ndarray, Line2D]:
     return gca().csd(
@@ -3392,7 +3398,7 @@ def ecdf(
     complementary: bool = False,
     orientation: Literal["vertical", "horizontal"] = "vertical",
     compress: bool = False,
-    data=None,
+    data: DataParamType = None,
     **kwargs,
 ) -> Line2D:
     return gca().ecdf(
@@ -3426,7 +3432,7 @@ def errorbar(
     capthick: float | None = None,
     elinestyle: LineStyleType | None = None,
     *,
-    data=None,
+    data: DataParamType = None,
     **kwargs,
 ) -> ErrorbarContainer:
     return gca().errorbar(
@@ -3463,7 +3469,7 @@ def eventplot(
     alpha: float | Sequence[float] | None = None,
     linestyles: LineStyleType | Sequence[LineStyleType] = "solid",
     *,
-    data=None,
+    data: DataParamType = None,
     **kwargs,
 ) -> EventCollection:
     return gca().eventplot(
@@ -3482,7 +3488,7 @@ def eventplot(
 
 # Autogenerated by boilerplate.py.  Do not edit as changes will be lost.
 @_copy_docstring_and_deprecators(Axes.fill)
-def fill(*args, data=None, **kwargs) -> list[Polygon]:
+def fill(*args, data: DataParamType = None, **kwargs) -> list[Polygon]:
     return gca().fill(*args, **({"data": data} if data is not None else {}), **kwargs)
 
 
@@ -3492,11 +3498,11 @@ def fill_between(
     x: ArrayLike,
     y1: ArrayLike | float,
     y2: ArrayLike | float = 0,
-    where: Sequence[bool] | None = None,
+    where: ArrayLike | None = None,
     interpolate: bool = False,
     step: Literal["pre", "post", "mid"] | None = None,
     *,
-    data=None,
+    data: DataParamType = None,
     **kwargs,
 ) -> FillBetweenPolyCollection:
     return gca().fill_between(
@@ -3517,11 +3523,11 @@ def fill_betweenx(
     y: ArrayLike,
     x1: ArrayLike | float,
     x2: ArrayLike | float = 0,
-    where: Sequence[bool] | None = None,
+    where: ArrayLike | None = None,
     step: Literal["pre", "post", "mid"] | None = None,
     interpolate: bool = False,
     *,
-    data=None,
+    data: DataParamType = None,
     **kwargs,
 ) -> FillBetweenPolyCollection:
     return gca().fill_betweenx(
@@ -3597,7 +3603,7 @@ def hexbin(
     marginals: bool = False,
     colorizer: Colorizer | None = None,
     *,
-    data=None,
+    data: DataParamType = None,
     **kwargs,
 ) -> PolyCollection:
     __ret = gca().hexbin(
@@ -3646,7 +3652,7 @@ def hist(
     label: str | Sequence[str] | None = None,
     stacked: bool = False,
     *,
-    data=None,
+    data: DataParamType = None,
     **kwargs,
 ) -> tuple[
     np.ndarray | list[np.ndarray],
@@ -3683,7 +3689,7 @@ def stairs(
     orientation: Literal["vertical", "horizontal"] = "vertical",
     baseline: float | ArrayLike | None = 0,
     fill: bool = False,
-    data=None,
+    data: DataParamType = None,
     **kwargs,
 ) -> StepPatch:
     return gca().stairs(
@@ -3709,7 +3715,7 @@ def hist2d(
     cmin: float | None = None,
     cmax: float | None = None,
     *,
-    data=None,
+    data: DataParamType = None,
     **kwargs,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, QuadMesh]:
     __ret = gca().hist2d(
@@ -3738,7 +3744,7 @@ def hlines(
     linestyles: LineStyleType = "solid",
     label: str = "",
     *,
-    data=None,
+    data: DataParamType = None,
     **kwargs,
 ) -> LineCollection:
     return gca().hlines(
@@ -3757,14 +3763,14 @@ def hlines(
 @_copy_docstring_and_deprecators(Axes.imshow)
 def imshow(
     X: ArrayLike | PIL.Image.Image,
-    cmap: str | Colormap | None = None,
-    norm: str | Normalize | None = None,
+    cmap: str | Colormap | BivarColormap | MultivarColormap | None = None,
+    norm: str | Norm | None = None,
     *,
     aspect: Literal["equal", "auto"] | float | None = None,
     interpolation: str | None = None,
     alpha: float | ArrayLike | None = None,
-    vmin: float | None = None,
-    vmax: float | None = None,
+    vmin: float | tuple[float, ...] | None = None,
+    vmax: float | tuple[float, ...] | None = None,
     colorizer: Colorizer | None = None,
     origin: Literal["upper", "lower"] | None = None,
     extent: tuple[float, float, float, float] | None = None,
@@ -3773,7 +3779,7 @@ def imshow(
     filterrad: float = 4.0,
     resample: bool | None = None,
     url: str | None = None,
-    data=None,
+    data: DataParamType = None,
     **kwargs,
 ) -> AxesImage:
     __ret = gca().imshow(
@@ -3831,7 +3837,7 @@ def magnitude_spectrum(
     sides: Literal["default", "onesided", "twosided"] | None = None,
     scale: Literal["default", "linear", "dB"] | None = None,
     *,
-    data=None,
+    data: DataParamType = None,
     **kwargs,
 ) -> tuple[np.ndarray, np.ndarray, Line2D]:
     return gca().magnitude_spectrum(
@@ -3876,12 +3882,12 @@ def pcolor(
     *args: ArrayLike,
     shading: Literal["flat", "nearest", "auto"] | None = None,
     alpha: float | None = None,
-    norm: str | Normalize | None = None,
-    cmap: str | Colormap | None = None,
-    vmin: float | None = None,
-    vmax: float | None = None,
+    norm: str | Norm | None = None,
+    cmap: str | Colormap | BivarColormap | MultivarColormap | None = None,
+    vmin: float | tuple[float, ...] | None = None,
+    vmax: float | tuple[float, ...] | None = None,
     colorizer: Colorizer | None = None,
-    data=None,
+    data: DataParamType = None,
     **kwargs,
 ) -> Collection:
     __ret = gca().pcolor(
@@ -3905,14 +3911,14 @@ def pcolor(
 def pcolormesh(
     *args: ArrayLike,
     alpha: float | None = None,
-    norm: str | Normalize | None = None,
-    cmap: str | Colormap | None = None,
-    vmin: float | None = None,
-    vmax: float | None = None,
+    norm: str | Norm | None = None,
+    cmap: str | Colormap | BivarColormap | MultivarColormap | None = None,
+    vmin: float | tuple[float, ...] | None = None,
+    vmax: float | tuple[float, ...] | None = None,
     colorizer: Colorizer | None = None,
     shading: Literal["flat", "nearest", "gouraud", "auto"] | None = None,
     antialiased: bool = False,
-    data=None,
+    data: DataParamType = None,
     **kwargs,
 ) -> QuadMesh:
     __ret = gca().pcolormesh(
@@ -3942,7 +3948,7 @@ def phase_spectrum(
     pad_to: int | None = None,
     sides: Literal["default", "onesided", "twosided"] | None = None,
     *,
-    data=None,
+    data: DataParamType = None,
     **kwargs,
 ) -> tuple[np.ndarray, np.ndarray, Line2D]:
     return gca().phase_spectrum(
@@ -3961,13 +3967,16 @@ def phase_spectrum(
 @_copy_docstring_and_deprecators(Axes.pie)
 def pie(
     x: ArrayLike,
+    *,
     explode: ArrayLike | None = None,
     labels: Sequence[str] | None = None,
     colors: ColorType | Sequence[ColorType] | None = None,
+    wedge_labels: str | Sequence | None = None,
+    wedge_label_distance: float | Sequence = 0.6,
     autopct: str | Callable[[float], str] | None = None,
     pctdistance: float = 0.6,
     shadow: bool = False,
-    labeldistance: float | None = 1.1,
+    labeldistance: float | None | _Unset = _UNSET,
     startangle: float = 0,
     radius: float = 1,
     counterclock: bool = True,
@@ -3976,16 +3985,17 @@ def pie(
     center: tuple[float, float] = (0, 0),
     frame: bool = False,
     rotatelabels: bool = False,
-    *,
     normalize: bool = True,
     hatch: str | Sequence[str] | None = None,
-    data=None,
+    data: DataParamType = None,
 ) -> PieContainer:
     return gca().pie(
         x,
         explode=explode,
         labels=labels,
         colors=colors,
+        wedge_labels=wedge_labels,
+        wedge_label_distance=wedge_label_distance,
         autopct=autopct,
         pctdistance=pctdistance,
         shadow=shadow,
@@ -4032,7 +4042,7 @@ def plot(
     *args: float | ArrayLike | str,
     scalex: bool = True,
     scaley: bool = True,
-    data=None,
+    data: DataParamType = None,
     **kwargs,
 ) -> list[Line2D]:
     return gca().plot(
@@ -4060,8 +4070,9 @@ def psd(
     sides: Literal["default", "onesided", "twosided"] | None = None,
     scale_by_freq: bool | None = None,
     return_line: bool | None = None,
+    Funits: str | None = None,
     *,
-    data=None,
+    data: DataParamType = None,
     **kwargs,
 ) -> tuple[np.ndarray, np.ndarray] | tuple[np.ndarray, np.ndarray, Line2D]:
     return gca().psd(
@@ -4076,6 +4087,7 @@ def psd(
         sides=sides,
         scale_by_freq=scale_by_freq,
         return_line=return_line,
+        Funits=Funits,
         **({"data": data} if data is not None else {}),
         **kwargs,
     )
@@ -4083,7 +4095,7 @@ def psd(
 
 # Autogenerated by boilerplate.py.  Do not edit as changes will be lost.
 @_copy_docstring_and_deprecators(Axes.quiver)
-def quiver(*args, data=None, **kwargs) -> Quiver:
+def quiver(*args, data: DataParamType = None, **kwargs) -> Quiver:
     __ret = gca().quiver(
         *args, **({"data": data} if data is not None else {}), **kwargs
     )
@@ -4117,7 +4129,7 @@ def scatter(
     edgecolors: Literal["face", "none"] | ColorType | Sequence[ColorType] | None = None,
     colorizer: Colorizer | None = None,
     plotnonfinite: bool = False,
-    data=None,
+    data: DataParamType = None,
     **kwargs,
 ) -> PathCollection:
     __ret = gca().scatter(
@@ -4176,7 +4188,7 @@ def specgram(
     vmin: float | None = None,
     vmax: float | None = None,
     *,
-    data=None,
+    data: DataParamType = None,
     **kwargs,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, AxesImage]:
     __ret = gca().specgram(
@@ -4252,7 +4264,7 @@ def stem(
     bottom: float = 0,
     label: str | None = None,
     orientation: Literal["vertical", "horizontal"] = "vertical",
-    data=None,
+    data: DataParamType = None,
 ) -> StemContainer:
     return gca().stem(
         *args,
@@ -4273,7 +4285,7 @@ def step(
     y: ArrayLike,
     *args,
     where: Literal["pre", "post", "mid"] = "pre",
-    data=None,
+    data: DataParamType = None,
     **kwargs,
 ) -> list[Line2D]:
     return gca().step(
@@ -4484,7 +4496,7 @@ def violinplot(
     facecolor: Sequence[ColorType] | ColorType | None = None,
     linecolor: Sequence[ColorType] | ColorType | None = None,
     *,
-    data=None,
+    data: DataParamType = None,
 ) -> dict[str, Collection]:
     return gca().violinplot(
         dataset,
@@ -4515,7 +4527,7 @@ def vlines(
     linestyles: LineStyleType = "solid",
     label: str = "",
     *,
-    data=None,
+    data: DataParamType = None,
     **kwargs,
 ) -> LineCollection:
     return gca().vlines(
@@ -4540,7 +4552,7 @@ def xcorr(
     usevlines: bool = True,
     maxlags: int = 10,
     *,
-    data=None,
+    data: DataParamType = None,
     **kwargs,
 ) -> tuple[np.ndarray, np.ndarray, LineCollection | Line2D, Line2D | None]:
     return gca().xcorr(

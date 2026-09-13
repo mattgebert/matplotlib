@@ -6,7 +6,7 @@ import re
 from packaging.version import parse as parse_version
 
 import numpy as np
-from numpy.testing import assert_almost_equal, assert_array_equal, assert_allclose
+from numpy.testing import assert_almost_equal, assert_array_equal
 import pytest
 
 import matplotlib as mpl
@@ -41,7 +41,7 @@ class TestMaxNLocator:
 
     @pytest.mark.parametrize('kwargs, errortype, match', [
         ({'foo': 0}, TypeError,
-         re.escape("set_params() got an unexpected keyword argument 'foo'")),
+         re.escape("__init__() got an unexpected keyword argument 'foo'")),
         ({'steps': [2, 1]}, ValueError, "steps argument must be an increasing"),
         ({'steps': 2}, ValueError, "steps argument must be an increasing"),
         ({'steps': [2, 11]}, ValueError, "steps argument must be an increasing"),
@@ -461,7 +461,7 @@ class TestLogitLocator:
 
     @pytest.mark.parametrize(
         "lims, expected_low_ticks",
-        zip(ref_basic_limits, ref_basic_major_ticks),
+        list(zip(ref_basic_limits, ref_basic_major_ticks)),
     )
     def test_basic_major(self, lims, expected_low_ticks):
         """
@@ -506,7 +506,7 @@ class TestLogitLocator:
 
     @pytest.mark.parametrize(
         "lims, expected_low_ticks",
-        zip(ref_basic_limits, ref_basic_major_ticks),
+        list(zip(ref_basic_limits, ref_basic_major_ticks)),
     )
     def test_minor(self, lims, expected_low_ticks):
         """
@@ -920,7 +920,7 @@ class TestScalarFormatter:
             ax.yaxis.set_major_locator(mticker.MaxNLocator(4))
 
         tmp_form.set_locs(ax.yaxis.get_majorticklocs())
-        assert orderOfMag == tmp_form.orderOfMagnitude
+        assert orderOfMag == tmp_form._orderOfMagnitude
 
     @pytest.mark.parametrize('value, expected', format_data)
     def test_format_data(self, value, expected):
@@ -1764,6 +1764,14 @@ class TestPercentFormatter:
         with mpl.rc_context(rc={'text.usetex': usetex}):
             assert fmt.format_pct(50, 100) == expected
 
+    def test_call_without_axis(self):
+        # With explicit decimals the axis view interval is not needed, so the
+        # formatter should format a value even when it is not attached to an
+        # axis, instead of raising an AttributeError.
+        with mpl.rc_context(rc={'text.usetex': False}):
+            assert mticker.PercentFormatter(xmax=1.0, decimals=1)(0.5) == '50.0%'
+            assert mticker.PercentFormatter(xmax=100, decimals=0)(50) == '50%'
+
 
 def _impl_locale_comma():
     try:
@@ -1951,10 +1959,7 @@ def test_bad_locator_subs(sub):
 @mpl.style.context('default')
 def test_small_range_loglocator(numticks, lims, ticks):
     ll = mticker.LogLocator(numticks=numticks)
-    if parse_version(np.version.version).major < 2:
-        assert_allclose(ll.tick_values(*lims), ticks, rtol=2e-16)
-    else:
-        assert_array_equal(ll.tick_values(*lims), ticks)
+    assert_array_equal(ll.tick_values(*lims), ticks)
 
 
 @mpl.style.context('default')

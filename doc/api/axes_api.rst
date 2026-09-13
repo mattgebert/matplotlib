@@ -39,6 +39,8 @@ Attributes
    Axes.viewLim
    Axes.dataLim
    Axes.spines
+   Axes.transAxes
+   Axes.transData
 
 Plotting
 ========
@@ -395,6 +397,8 @@ Aspect ratio
    Axes.set_adjustable
    Axes.get_adjustable
 
+.. _axes-api-ticks:
+
 Ticks and tick labels
 ---------------------
 
@@ -632,5 +636,3 @@ Other
    Axes.get_figure
    Axes.figure
    Axes.remove
-
-.. autoclass:: matplotlib.axes.Axes.ArtistList

@@ -291,8 +291,11 @@ class Collection(mcolorizer.ColorizingArtist):
             if isinstance(offsets, np.ma.MaskedArray):
                 offsets = offsets.filled(np.nan)
                 # get_path_collection_extents handles nan but not masked arrays
+            data_trf = transform.get_affine() - transData
+            if not data_trf.is_affine:
+                paths = [data_trf.transform_path_non_affine(p) for p in paths]
             return mpath.get_path_collection_extents(
-                transform.get_affine() - transData, paths,
+                data_trf.get_affine(), paths,
                 self.get_transforms(),
                 offset_trf.transform_non_affine(offsets),
                 offset_trf.get_affine().frozen())
@@ -360,12 +363,19 @@ class Collection(mcolorizer.ColorizingArtist):
             return
         renderer.open_group(self.__class__.__name__, self.get_gid())
 
+        # Bail if the collection does not have any offsets (e.g., an empty scatter plot)
+        if len(self.get_offsets()) == 0:
+            renderer.close_group(self.__class__.__name__)
+            self.stale = False
+            return
+
         self.update_scalarmappable()
 
         transform, offset_trf, offsets, paths = self._prepare_points()
 
         gc = renderer.new_gc()
         self._set_gc_clip(gc)
+        gc.set_blend_mode(self.get_blend_mode())
         gc.set_snap(self.get_snap())
 
         if self._hatch:
@@ -672,7 +682,7 @@ class Collection(mcolorizer.ColorizingArtist):
 
         Parameters
         ----------
-        ls : {'-', '--', '-.', ':', '', ...} or (offset, on-off-seq) or list thereof
+        ls : :mpltype:`linestyle` or list of :mpltype:`linestyle`
             If a list, the individual elements are assigned to the elements of the
             collection.
 
@@ -1271,7 +1281,15 @@ class PathCollection(_CollectionWithSizes):
               "alpha": self.get_alpha(),
               **kwargs}
 
-        for val, lab in zip(values, label_values):
+        # Pre-format all labels
+        # TODO: check whether we can switch to
+        #       formatted_labels = fmt.format_ticks(label_values)
+        #       There are subtle differences for some formatters as that passes the
+        #       indices to __call__ as well.
+        fmt.set_locs(label_values)
+        formatted_labels = [fmt(lab) for lab in label_values]
+
+        for val, formatted in zip(values, formatted_labels):
             if prop == "colors":
                 color = self.cmap(self.norm(val))
             elif prop == "sizes":
@@ -1281,10 +1299,7 @@ class PathCollection(_CollectionWithSizes):
             h = mlines.Line2D([0], [0], ls="", color=color, ms=size,
                               marker=self.get_paths()[0], **kw)
             handles.append(h)
-            if hasattr(fmt, "set_locs"):
-                fmt.set_locs(label_values)
-            l = fmt(lab)
-            labels.append(l)
+            labels.append(formatted)
 
         return handles, labels
 
@@ -1925,14 +1940,8 @@ class EventCollection(LineCollection):
             The line width of the event lines, in points.
         color : :mpltype:`color` or list of :mpltype:`color`, default: :rc:`lines.color`
             The color of the event lines.
-        linestyle : str or tuple or list thereof, default: 'solid'
-            Valid strings are ['solid', 'dashed', 'dashdot', 'dotted',
-            '-', '--', '-.', ':']. Dash tuples should be of the form::
-
-                (offset, onoffseq),
-
-            where *onoffseq* is an even length tuple of on and off ink
-            in points.
+        linestyle : :mpltype:`linestyle`, default: 'solid'
+            The linestyle of the event lines.
         antialiased : bool or list thereof, default: :rc:`lines.antialiased`
             Whether to use antialiasing for drawing the lines.
         **kwargs
@@ -2312,6 +2321,7 @@ class TriMesh(Collection):
 
         gc = renderer.new_gc()
         self._set_gc_clip(gc)
+        gc.set_blend_mode(self.get_blend_mode())
         gc.set_linewidth(self.get_linewidth()[0])
         renderer.draw_gouraud_triangles(gc, verts, colors, transform.frozen())
         gc.restore()
@@ -2378,6 +2388,8 @@ class _MeshData:
             h, w = height, width
         ok_shapes = [(h, w, 3), (h, w, 4), (h, w), (h * w,)]
         if A is not None:
+            if hasattr(self, 'norm'):
+                A = mcolorizer._ensure_multivariate_data(A, self.norm.n_components)
             shape = np.shape(A)
             if shape not in ok_shapes:
                 raise ValueError(
@@ -2560,6 +2572,7 @@ class QuadMesh(_MeshData, Collection):
         gc = renderer.new_gc()
         gc.set_snap(self.get_snap())
         self._set_gc_clip(gc)
+        gc.set_blend_mode(self.get_blend_mode())
         gc.set_linewidth(self.get_linewidth()[0])
 
         if self._shading == 'gouraud':
@@ -2635,7 +2648,7 @@ class PolyQuadMesh(_MeshData, PolyCollection):
         mask = (mask[0:-1, 0:-1] | mask[1:, 1:] | mask[0:-1, 1:] | mask[1:, 0:-1])
         arr = self.get_array()
         if arr is not None:
-            arr = np.ma.getmaskarray(arr)
+            arr = self._getmaskarray(arr)
             if arr.ndim == 3:
                 # RGB(A) case
                 mask |= np.any(arr, axis=-1)

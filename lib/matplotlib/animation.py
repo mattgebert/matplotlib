@@ -117,6 +117,7 @@ class MovieWriterRegistry:
 
     def __getitem__(self, name):
         """Get an available writer class from its name."""
+        _api.check_in_list(self._registered, writer=name)
         if self.is_available(name):
             return self._registered[name]
         raise RuntimeError(f"Requested MovieWriter ({name}) not available")
@@ -176,8 +177,10 @@ class AbstractMovieWriter(abc.ABC):
     @property
     def frame_size(self):
         """A tuple ``(width, height)`` in pixels of a movie frame."""
+        # We cannot query the canvas for width/height because the dpi may be different
+        # The tolerance of 1e-8 covers a floating-point tick for even 100,000 pixels
         w, h = self.fig.get_size_inches()
-        return int(w * self.dpi), int(h * self.dpi)
+        return int(w * self.dpi + 1e-8), int(h * self.dpi + 1e-8)
 
     def _supports_transparency(self):
         """
@@ -292,15 +295,17 @@ class MovieWriter(AbstractMovieWriter):
         self.extra_args = extra_args
 
     def _adjust_frame_size(self):
+        wo, ho = self.frame_size  # in pixels, so need to convert to inches
+        wo /= self.dpi
+        ho /= self.dpi
         if self.codec == 'h264':
-            wo, ho = self.fig.get_size_inches()
             w, h = adjusted_figsize(wo, ho, self.dpi, 2)
             if (wo, ho) != (w, h):
                 self.fig.set_size_inches(w, h, forward=True)
                 _log.info('figure size in inches has been adjusted '
                           'from %s x %s to %s x %s', wo, ho, w, h)
         else:
-            w, h = self.fig.get_size_inches()
+            w, h = wo, ho
         _log.debug('frame size in pixels is %s x %s', *self.frame_size)
         return w, h
 
@@ -369,6 +374,8 @@ class MovieWriter(AbstractMovieWriter):
     @classmethod
     def isAvailable(cls):
         """Return whether a MovieWriter subclass is actually available."""
+        if sys.platform == 'emscripten':
+            return False
         return shutil.which(cls.bin_path()) is not None
 
 
@@ -851,10 +858,7 @@ class HTMLWriter(FileMovieWriter):
 
 class Animation:
     """
-    A base class for Animations.
-
-    This class is not usable as is, and should be subclassed to provide needed
-    behavior.
+    Abstract base class for Animations.
 
     .. note::
 
@@ -1419,7 +1423,7 @@ class Animation:
 
 class TimedAnimation(Animation):
     """
-    `Animation` subclass for time-based animation.
+    Abstract `Animation` subclass for time-based animation.
 
     A new frame is drawn every *interval* milliseconds.
 

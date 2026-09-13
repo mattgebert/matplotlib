@@ -1,5 +1,7 @@
 from collections import namedtuple
+from collections.abc import Sequence
 import contextlib
+from enum import StrEnum, auto
 from functools import cache, reduce, wraps
 import inspect
 from inspect import Signature, Parameter
@@ -18,6 +20,47 @@ from .transforms import (BboxBase, Bbox, IdentityTransform, Transform, Transform
                          TransformedPatchPath, TransformedPath)
 
 _log = logging.getLogger(__name__)
+
+
+# Blend modes that are supported by all non-PS backends
+class _BlendModePDFSpec(StrEnum):
+    NORMAL = auto()
+    MULTIPLY = auto()
+    SCREEN = auto()
+    OVERLAY = auto()
+    DARKEN = auto()
+    LIGHTEN = auto()
+    COLOR_DODGE = "color dodge"
+    COLOR_BURN = "color burn"
+    HARD_LIGHT = "hard light"
+    SOFT_LIGHT = "soft light"
+    DIFFERENCE = auto()
+    EXCLUSION = auto()
+    HUE = auto()
+    SATURATION = auto()
+    COLOR = auto()
+    LUMINOSITY = auto()
+
+
+# Blend modes that are supported natively by only Agg and Cairo backends
+class _BlendModePorterDuff(StrEnum):
+    KNOCKOUT = auto()
+    ERASE = auto()
+    CLEAR = auto()
+    ATOP = auto()
+    XOR = auto()
+    PLUS = auto()
+
+
+# Merge the two enumerations into a single enumeration of all blend modes
+BlendMode = StrEnum(
+    "BlendMode", {**_BlendModePDFSpec.__members__, **_BlendModePorterDuff.__members__}
+)
+BlendMode.__doc__ = """\
+An enumeration of the allowed blend modes.
+
+See :ref:`blend-modes`.
+"""
 
 
 def _prevent_rasterization(draw):
@@ -201,6 +244,8 @@ Supported properties are
         self._visible = True
         self._animated = False
         self._alpha = None
+        self._blend_mode = "normal"
+        self._fill_rule = "nonzero"
         self.clipbox = None
         self._clippath = None
         self._clipon = True
@@ -223,7 +268,7 @@ Supported properties are
         self._snap = None
         self._sketch = mpl.rcParams['path.sketch']
         self._path_effects = mpl.rcParams['path.effects']
-        self._sticky_edges = _XYPair([], [])
+        self._sticky_edges = None
         self._in_layout = True
         self._in_autoscale = False
 
@@ -240,9 +285,6 @@ Supported properties are
         with `.FigureCanvasBase.draw_idle`.  Call `~.axes.Axes.relim` to
         update the Axes limits if desired.
 
-        Note: `~.axes.Axes.relim` will not see collections even if the
-        collection was added to the Axes with *autolim* = True.
-
         Note: there is no support for removing the artist's legend entry.
         """
 
@@ -255,10 +297,12 @@ Supported properties are
             # clear stale callback
             self.stale_callback = None
             _ax_flag = False
-            if hasattr(self, 'axes') and self.axes:
+            ax = getattr(self, 'axes', None)
+            mouseover_set = getattr(ax, '_mouseover_set', None)
+            if mouseover_set is not None:
                 # remove from the mouse hit list
-                self.axes._mouseover_set.discard(self)
-                self.axes.stale = True
+                mouseover_set.discard(self)
+                ax.stale = True
                 self.axes = None  # decouple the artist from the Axes
                 _ax_flag = True
 
@@ -269,11 +313,6 @@ Supported properties are
 
         else:
             raise NotImplementedError('cannot remove artist')
-        # TODO: the fix for the collections relim problem is to move the
-        # limits calculation into the artist itself, including the property of
-        # whether or not the artist should affect the limits.  Then there will
-        # be no distinction between axes.add_line, axes.add_patch, etc.
-        # TODO: add legend support
 
     def have_units(self):
         """Return whether units are set on any axis."""
@@ -1229,6 +1268,8 @@ Supported properties are
         >>> artist.sticky_edges.y[:] = (ymin, ymax)
 
         """
+        if self._sticky_edges is None:
+            self._sticky_edges = _XYPair([], [])
         return self._sticky_edges
 
     def update_from(self, other):
@@ -1237,14 +1278,19 @@ Supported properties are
         self._transformSet = other._transformSet
         self._visible = other._visible
         self._alpha = other._alpha
+        self._blend_mode = other._blend_mode
+        self._fill_rule = other._fill_rule
         self.clipbox = other.clipbox
         self._clipon = other._clipon
         self._clippath = other._clippath
         self._label = other._label
         self._sketch = other._sketch
         self._path_effects = other._path_effects
-        self.sticky_edges.x[:] = other.sticky_edges.x.copy()
-        self.sticky_edges.y[:] = other.sticky_edges.y.copy()
+        if other._sticky_edges is not None:
+            self.sticky_edges.x[:] = other._sticky_edges.x.copy()
+            self.sticky_edges.y[:] = other._sticky_edges.y.copy()
+        else:
+            self._sticky_edges = None
         self.pchanged()
         self.stale = True
 
@@ -1474,6 +1520,35 @@ Supported properties are
                 ax._mouseover_set.discard(self)
 
     mouseover = property(get_mouseover, set_mouseover)  # backcompat.
+
+    def set_blend_mode(self, blend_mode):
+        """
+        Set the mode for blending/compositing.
+
+        On vector backends, not all blend modes are natively supported.  See
+        :ref:`blend-modes` for details.
+
+        Parameters
+        ----------
+        blend_mode : :mpltype:`blend mode`
+            The allowed string values are:
+            "normal", "multiply", "screen", "overlay",
+            "darken", "lighten", "color dodge", "color burn",
+            "hard light", "soft light", "difference", "exclusion",
+            "hue", "saturation", "color", "luminosity",
+            "knockout", "erase", "clear", "atop", "xor", and "plus".
+        """
+        _api.check_in_list(BlendMode, blend_mode=blend_mode)
+        self._blend_mode = blend_mode
+
+    def get_blend_mode(self):
+        """
+        Return the mode for blending/compositing.
+
+        On vector backends, not all blend modes are natively supported.  See
+        :ref:`blend-modes` for details.
+        """
+        return self._blend_mode
 
 
 def _get_tightbbox_for_layout_only(obj, *args, **kwargs):
@@ -1788,6 +1863,74 @@ class ArtistInspector:
             name = self.aliased_name(name)
             lines.append(f'    {name} = {s}')
         return lines
+
+
+class ArtistList(Sequence):
+    """
+    A sublist of Axes or Figure children based on their type.
+
+    The Axes' type-specific children sublists were made immutable in Matplotlib
+    3.7.  In the future these artist lists may be replaced by tuples. Use
+    as if this is a tuple already.
+    """
+    def __init__(self, parent, prop_name, valid_types=None, invalid_types=None):
+        """
+        Parameters
+        ----------
+        parent : `~matplotlib.axes.Axes` or `~matplotlib.figure.FigureBase`
+            The Axes or (Sub)Figure from which this sublist will pull the children
+            Artists.
+        prop_name : str
+            The property name used to access this sublist from the parent.
+        valid_types : list of type, optional
+            A list of types that determine which children will be returned
+            by this sublist. If specified, then the Artists in the sublist
+            must be instances of any of these types. If unspecified, then
+            any type of Artist is valid (unless limited by
+            *invalid_types*.)
+        invalid_types : tuple, optional
+            A list of types that determine which children will *not* be
+            returned by this sublist. If specified, then Artists in the
+            sublist will never be an instance of these types. Otherwise, no
+            types will be excluded.
+        """
+        self._parent = parent
+        self._prop_name = prop_name
+        self._type_check = lambda artist: (
+            (not valid_types or isinstance(artist, valid_types)) and
+            (not invalid_types or not isinstance(artist, invalid_types))
+        )
+
+    def __repr__(self):
+        parent_type = self._parent.__class__.__name__
+        return f'<{parent_type}.ArtistList of {len(self)} {self._prop_name}>'
+
+    def __len__(self):
+        return sum(self._type_check(artist) for artist in self._parent._children)
+
+    def __iter__(self):
+        for artist in list(self._parent._children):
+            if self._type_check(artist):
+                yield artist
+
+    def __getitem__(self, key):
+        return [artist
+                for artist in self._parent._children
+                if self._type_check(artist)][key]
+
+    def __add__(self, other):
+        if isinstance(other, (list, ArtistList)):
+            return [*self, *other]
+        if isinstance(other, (tuple, ArtistList)):
+            return (*self, *other)
+        return NotImplemented
+
+    def __radd__(self, other):
+        if isinstance(other, list):
+            return other + list(self)
+        if isinstance(other, tuple):
+            return other + tuple(self)
+        return NotImplemented
 
 
 def getp(obj, property=None):

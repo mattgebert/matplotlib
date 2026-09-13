@@ -142,10 +142,8 @@ class ColorSequenceRegistry(Mapping):
         self._color_sequences = {**self._BUILTIN_COLOR_SEQUENCES}
 
     def __getitem__(self, item):
-        try:
-            return list(self._color_sequences[item])
-        except KeyError:
-            raise KeyError(f"{item!r} is not a known color sequence name")
+        return list(_api.getitem_checked(self._color_sequences, _error_cls=KeyError,
+                                         sequence_name=item))
 
     def __iter__(self):
         return iter(self._color_sequences)
@@ -290,7 +288,15 @@ def same_color(c1, c2):
     """
     Return whether the colors *c1* and *c2* are the same.
 
-    *c1*, *c2* can be single colors or lists/arrays of colors.
+    Parameters
+    ----------
+    c1, c2 : :mpltype:`color` or list of :mpltype:`color` or RGB(A) array
+        If passing multiple colors, *c1* and *c2* must be of the same length. RGB(A)
+        arrays must be of shape (ncolors, 3) or (ncolors, 4).
+
+    Returns
+    -------
+    bool
     """
     c1 = to_rgba_array(c1)
     c2 = to_rgba_array(c2)
@@ -579,10 +585,10 @@ def to_hex(c, keep_alpha=False):
 ### Backwards-compatible color-conversion API
 
 
-cnames = CSS4_COLORS
-hexColorPattern = re.compile(r"\A#[a-fA-F0-9]{6}\Z")
-rgb2hex = to_hex
-hex2color = to_rgb
+cnames = CSS4_COLORS  #: :meta private:
+hexColorPattern = re.compile(r"\A#[a-fA-F0-9]{6}\Z")  #: :meta private:
+rgb2hex = to_hex  #: :meta private:
+hex2color = to_rgb  #: :meta private:
 
 
 class ColorConverter:
@@ -590,6 +596,8 @@ class ColorConverter:
     A class only kept for backwards compatibility.
 
     Its functionality is entirely provided by module-level functions.
+
+    :meta private:
     """
     colors = _colors_full_map
     cache = _colors_full_map.cache
@@ -1162,16 +1170,18 @@ class LinearSegmentedColormap(Colormap):
         self._gamma = gamma
 
     def _init(self):
-        self._lut = np.ones((self.N + 3, 4), float)
-        self._lut[:-3, 0] = _create_lookup_table(
+        # Assemble the LUT first in a local variable in case of parallel threads
+        lut = np.ones((self.N + 3, 4), float)
+        lut[:-3, 0] = _create_lookup_table(
             self.N, self._segmentdata['red'], self._gamma)
-        self._lut[:-3, 1] = _create_lookup_table(
+        lut[:-3, 1] = _create_lookup_table(
             self.N, self._segmentdata['green'], self._gamma)
-        self._lut[:-3, 2] = _create_lookup_table(
+        lut[:-3, 2] = _create_lookup_table(
             self.N, self._segmentdata['blue'], self._gamma)
         if 'alpha' in self._segmentdata:
-            self._lut[:-3, 3] = _create_lookup_table(
+            lut[:-3, 3] = _create_lookup_table(
                 self.N, self._segmentdata['alpha'], 1)
+        self._lut = lut
         self._isinit = True
         self._update_lut_extremes()
 
@@ -1223,7 +1233,7 @@ class LinearSegmentedColormap(Colormap):
             except Exception as e2:
                 raise e2 from e
             vals = np.asarray(_vals)
-            if np.min(vals) < 0 or np.max(vals) > 1 or np.any(np.diff(vals) <= 0):
+            if np.min(vals) < 0 or np.max(vals) > 1 or np.any(np.diff(vals) < 0):
                 raise ValueError(
                     "the values passed in the (value, color) pairs "
                     "must increase monotonically from 0 to 1."
@@ -1362,8 +1372,10 @@ class ListedColormap(Colormap):
         super().__init__(name, N, bad=bad, under=under, over=over)
 
     def _init(self):
-        self._lut = np.zeros((self.N + 3, 4), float)
-        self._lut[:-3] = to_rgba_array(self.colors)
+        # Assemble the LUT first in a local variable in case of parallel threads
+        lut = np.zeros((self.N + 3, 4), float)
+        lut[:-3] = to_rgba_array(self.colors)
+        self._lut = lut
         self._isinit = True
         self._update_lut_extremes()
 
@@ -1432,9 +1444,9 @@ class MultivarColormap:
             Describe how colormaps are combined in sRGB space
 
             - If 'sRGB_add' -> Mixing produces brighter colors
-              `sRGB = sum(colors)`
+              ``sRGB = sum(colors)``
             - If 'sRGB_sub' -> Mixing produces darker colors
-              `sRGB = 1 - sum(1 - colors)`
+              ``sRGB = 1 - sum(1 - colors)``
         name : str, optional
             The name of the colormap family.
         """
@@ -1606,15 +1618,15 @@ class MultivarColormap:
 
         Parameters
         ----------
-        bad: :mpltype:`color`, default: None
+        bad : :mpltype:`color`, default: None
             If Matplotlib color, the bad value is set accordingly in the copy
 
-        under tuple of :mpltype:`color`, default: None
-            If tuple, the `under` value of each component is set with the values
+        under : tuple of :mpltype:`color`, default: None
+            If tuple, the 'under' value of each component is set with the values
             from the tuple.
 
-        over tuple of :mpltype:`color`, default: None
-            If tuple, the `over` value of each component is set with the values
+        over : tuple of :mpltype:`color`, default: None
+            If tuple, the 'over' value of each component is set with the values
             from the tuple.
 
         Returns
@@ -3212,6 +3224,8 @@ class BoundaryNorm(Normalize):
         boundaries : array-like
             Monotonically increasing sequence of at least 2 bin edges:  data
             falling in the n-th bin will be mapped to the n-th color.
+            Bins are left-closed and right-open; i.e., the n-th bin is
+            ``boundaries[n] <= value < boundaries[n + 1]``.
 
         ncolors : int
             Number of colors in the colormap to be used.
@@ -3219,12 +3233,12 @@ class BoundaryNorm(Normalize):
         clip : bool, optional
             If clip is ``True``, out of range values are mapped to 0 if they
             are below ``boundaries[0]`` or mapped to ``ncolors - 1`` if they
-            are above ``boundaries[-1]``.
+            are greater than or equal to ``boundaries[-1]``.
 
             If clip is ``False``, out of range values are mapped to -1 if
             they are below ``boundaries[0]`` or mapped to *ncolors* if they are
-            above ``boundaries[-1]``. These are then converted to valid indices
-            by `Colormap.__call__`.
+            greater than or equal to ``boundaries[-1]``. These are then
+            converted to valid indices by `Colormap.__call__`.
 
         extend : {'neither', 'both', 'min', 'max'}, default: 'neither'
             Extend the number of bins to include one or both of the
@@ -3518,7 +3532,7 @@ class MultiNorm(Norm):
             - If iterable, must be of length `n_components`. Each element can be a
               scalar or array-like and is mapped through the corresponding norm.
             - If structured array, must have `n_components` fields. Each field
-              is mapped through the the corresponding norm.
+              is mapped through the corresponding norm.
 
         """
         values = self._iterable_components_in_data(values, self.n_components)
@@ -3717,11 +3731,10 @@ def hsv_to_rgb(hsv):
                          f"shape {hsv.shape} was found.")
 
     in_shape = hsv.shape
-    hsv = np.array(
-        hsv, copy=False,
-        dtype=np.promote_types(hsv.dtype, np.float32),  # Don't work on ints.
-        ndmin=2,  # In case input was 1D.
-    )
+    # ensure numerics are done at least on float32; ints are cast as well
+    hsv = np.asarray(hsv, dtype=np.promote_types(hsv.dtype, np.float32))
+    if hsv.ndim == 1:
+        hsv = np.expand_dims(hsv, axis=0)  # ensure hsv is 2D
 
     h = hsv[..., 0]
     s = hsv[..., 1]

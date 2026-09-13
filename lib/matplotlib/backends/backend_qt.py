@@ -87,6 +87,13 @@ cursord = {
 }
 
 
+def _create_WindowIcon():
+    icon = QtGui.QIcon()
+    icon.addFile(str(cbook._get_data_path('images/matplotlib_small.svg')))
+    icon.addFile(str(cbook._get_data_path('images/matplotlib.svg')))
+    return icon
+
+
 # lru_cache keeps a reference to the QApplication instance, keeping it from
 # being GC'd.
 @functools.lru_cache(1)
@@ -104,9 +111,9 @@ def _create_qApp():
         # Check to make sure a QApplication from a different major version
         # of Qt is not instantiated in the process
         if QT_API in {'PyQt6', 'PySide6'}:
-            other_bindings = ('PyQt5', 'PySide2')
+            other_bindings = ('PyQt5',)
             qt_version = 6
-        elif QT_API in {'PyQt5', 'PySide2'}:
+        elif QT_API == 'PyQt5':
             other_bindings = ('PyQt6', 'PySide6')
             qt_version = 5
         else:
@@ -136,9 +143,7 @@ def _create_qApp():
             pass
         app = QtWidgets.QApplication(["matplotlib"])
         if sys.platform == "darwin":
-            image = str(cbook._get_data_path('images/matplotlib.svg'))
-            icon = QtGui.QIcon(image)
-            app.setWindowIcon(icon)
+            app.setWindowIcon(_create_WindowIcon())
         app.setQuitOnLastWindowClosed(True)
         cbook._setup_new_guiapp()
         if qt_version == 5:
@@ -195,10 +200,13 @@ class TimerQT(TimerBase):
         super().__init__(*args, **kwargs)
 
     def __del__(self):
-        # The check for deletedness is needed to avoid an error at animation
-        # shutdown with PySide2.
-        if not _isdeleted(self._timer):
+        try:
             self._timer_stop()
+        except RuntimeError as e:
+            # Silence warning on shutdown.
+            ignore_msg = "wrapped C/C++ object of type QTimer has been deleted"
+            if str(e) != ignore_msg:
+                raise
 
     def _timer_set_single_shot(self):
         self._timer.setSingleShot(self._single)
@@ -302,7 +310,7 @@ class FigureCanvasQT(FigureCanvasBase, QtWidgets.QWidget):
         # (otherwise, it's already a QPoint)
         x = pos.x()
         # flip y so y=0 is bottom of canvas
-        y = self.figure.bbox.height / self.device_pixel_ratio - pos.y()
+        y = self.get_width_height()[1] - pos.y()
         return x * self.device_pixel_ratio, y * self.device_pixel_ratio
 
     def enterEvent(self, event):
@@ -587,9 +595,7 @@ class FigureManagerQT(FigureManagerBase):
         self.window.closing.connect(self._widgetclosed)
 
         if sys.platform != "darwin":
-            image = str(cbook._get_data_path('images/matplotlib.svg'))
-            icon = QtGui.QIcon(image)
-            self.window.setWindowIcon(icon)
+            self.window.setWindowIcon(_create_WindowIcon())
 
         self.window._destroying = False
 
@@ -720,7 +726,12 @@ class _IconEngine(QtGui.QIconEngine):
 
     def _devicePixelRatio(self):
         """Return the current device pixel ratio for the toolbar, defaulting to 1."""
-        return (self.toolbar.devicePixelRatioF() or 1) if self.toolbar else 1
+        use_high_dpi_pixmaps = True
+        if hasattr(QtCore.Qt.ApplicationAttribute, "AA_UseHighDpiPixmaps"):
+            app = QtWidgets.QApplication.instance()
+            use_high_dpi_pixmaps = app.testAttribute(QtCore.Qt.AA_UseHighDpiPixmaps)
+        toolbar_dpr = (self.toolbar.devicePixelRatioF() or 1) if self.toolbar else 1
+        return toolbar_dpr if use_high_dpi_pixmaps else 1
 
     def _create_pixmap_from_svg(self, svg_path, size):
         """Create a pixmap from SVG with proper scaling and dark mode support."""
@@ -864,7 +875,6 @@ class NavigationToolbar2QT(NavigationToolbar2, QtWidgets.QToolBar):
         engine = _IconEngine(path_regular, self)
         return QtGui.QIcon(engine)
 
-
     def edit_parameters(self):
         axes = self.canvas.figure.get_axes()
         if not axes:
@@ -915,7 +925,7 @@ class NavigationToolbar2QT(NavigationToolbar2, QtWidgets.QToolBar):
             self.locLabel.setText(s)
 
     def draw_rubberband(self, event, x0, y0, x1, y1):
-        height = self.canvas.figure.bbox.height
+        height = self.canvas.get_width_height(physical=True)[1]
         y1 = height - y1
         y0 = height - y0
         rect = [int(val) for val in (x0, y0, x1 - x0, y1 - y0)]
@@ -980,8 +990,7 @@ class NavigationToolbar2QT(NavigationToolbar2, QtWidgets.QToolBar):
 class SubplotToolQt(QtWidgets.QDialog):
     def __init__(self, targetfig, parent):
         super().__init__(parent)
-        self.setWindowIcon(QtGui.QIcon(
-            str(cbook._get_data_path("images/matplotlib.png"))))
+        self.setWindowIcon(_create_WindowIcon())
         self.setObjectName("SubplotTool")
         self._spinboxes = {}
         main_layout = QtWidgets.QHBoxLayout()

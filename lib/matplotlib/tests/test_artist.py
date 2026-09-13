@@ -96,7 +96,7 @@ def test_collection_transform_of_none():
     assert isinstance(c.get_offset_transform(), mtransforms.IdentityTransform)
 
 
-@image_comparison(["clip_path_clipping"], remove_text=True)
+@image_comparison(["clip_path_clipping"], remove_text=True, style='_classic_test')
 def test_clipping():
     exterior = mpath.Path.unit_rectangle().deepcopy()
     exterior.vertices *= 4
@@ -217,9 +217,6 @@ def test_remove():
 
 @image_comparison(["default_edges.png"], remove_text=True, style='default')
 def test_default_edges():
-    # Remove this line when this test image is regenerated.
-    plt.rcParams['text.kerning_factor'] = 6
-
     fig, [[ax1, ax2], [ax3, ax4]] = plt.subplots(2, 2)
 
     ax1.plot(np.arange(10), np.arange(10), 'x',
@@ -353,6 +350,12 @@ def test_set_alpha_for_array():
         art._set_alpha_for_array([0.5, 1.1])
     with pytest.raises(ValueError, match="alpha must be between 0 and 1"):
         art._set_alpha_for_array([0.5, np.nan])
+
+
+def test_set_blend_mode():
+    art = martist.Artist()
+    with pytest.raises(ValueError, match="not a valid value for blend_mode"):
+        art.set_blend_mode("invalid_blend_mode")
 
 
 def test_callbacks():

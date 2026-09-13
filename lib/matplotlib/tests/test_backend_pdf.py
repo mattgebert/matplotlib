@@ -1,10 +1,11 @@
 import datetime
 import decimal
 import io
-import os
 from pathlib import Path
+import string
 
 import numpy as np
+from packaging.version import parse as parse_version
 import pytest
 
 import matplotlib as mpl
@@ -21,7 +22,7 @@ from matplotlib.testing.decorators import check_figures_equal, image_comparison
 from matplotlib.testing._markers import needs_usetex
 
 
-@image_comparison(['pdf_use14corefonts.pdf'])
+@image_comparison(['pdf_use14corefonts.pdf'], style='_classic_test')
 def test_use14corefonts():
     rcParams['pdf.use14corefonts'] = True
     rcParams['font.family'] = 'sans-serif'
@@ -112,7 +113,10 @@ def test_indexed_image():
 
     with pikepdf.Pdf.open(buf) as pdf:
         page, = pdf.pages
-        image, = page.images.values()
+        if parse_version(pikepdf.__version__) < parse_version('10.9.0'):
+            image, = page.images.values()
+        else:
+            image, = page.get_images().values()
         pdf_image = pikepdf.PdfImage(image)
         assert pdf_image.indexed
         pil_image = pdf_image.as_pil_image()
@@ -291,8 +295,8 @@ def test_text_urls_tex():
             assert annot.Rect[1] == decimal.Decimal('0.7') * 72
 
 
-def test_pdfpages_fspath():
-    with PdfPages(Path(os.devnull)) as pdf:
+def test_pdfpages_fspath(tmp_path):
+    with PdfPages(tmp_path / 'unused.pdf') as pdf:
         pdf.savefig(plt.figure())
 
 
@@ -309,7 +313,7 @@ def test_hatching_legend(text_placeholders):
     fig.legend([a, b, a, b], ["", "", "", ""])
 
 
-@image_comparison(['grayscale_alpha.pdf'])
+@image_comparison(['grayscale_alpha.pdf'], style='_classic_test')
 def test_grayscale_alpha():
     """Masking images with NaN did not work for grayscale images"""
     x, y = np.ogrid[-2:2:.1, -2:2:.1]
@@ -346,7 +350,7 @@ def test_empty_rasterized():
     fig.savefig(io.BytesIO(), format="pdf")
 
 
-@image_comparison(['kerning.pdf'])
+@image_comparison(['kerning.pdf'], style='mpl20')
 def test_kerning():
     fig = plt.figure()
     s = "AVAVAVAVAVAVAVAV€AAVV"
@@ -361,13 +365,13 @@ def test_glyphs_subset():
     # non-subsetted FT2Font
     nosubfont = FT2Font(fpath)
     nosubfont.set_text(chars)
+    nosubcmap = nosubfont.get_charmap()
 
     # subsetted FT2Font
-    with get_glyphs_subset(fpath, chars) as subset:
-        subfont = FT2Font(font_as_file(subset))
+    glyph_indices = {nosubcmap[ord(c)] for c in chars}
+    with get_glyphs_subset(fm.FontPath(fpath, 0), glyph_indices) as subset:
+        subfont = FT2Font(font_as_file(subset.font))
     subfont.set_text(chars)
-
-    nosubcmap = nosubfont.get_charmap()
     subcmap = subfont.get_charmap()
 
     # all unique chars must be available in subsetted font
@@ -380,26 +384,58 @@ def test_glyphs_subset():
     assert subfont.get_num_glyphs() == nosubfont.get_num_glyphs()
 
 
-@image_comparison(["multi_font_type3.pdf"])
+@image_comparison(["multi_font_type3.pdf"], style='mpl20')
 def test_multi_font_type3():
     fonts, test_str = _gen_multi_font_text()
     plt.rc('font', family=fonts, size=16)
     plt.rc('pdf', fonttype=3)
 
-    fig = plt.figure()
+    fig = plt.figure(figsize=(8, 6))
     fig.text(0.5, 0.5, test_str,
              horizontalalignment='center', verticalalignment='center')
 
 
-@image_comparison(["multi_font_type42.pdf"])
+@image_comparison(["multi_font_type42.pdf"], style='mpl20')
 def test_multi_font_type42():
     fonts, test_str = _gen_multi_font_text()
     plt.rc('font', family=fonts, size=16)
     plt.rc('pdf', fonttype=42)
 
-    fig = plt.figure()
+    fig = plt.figure(figsize=(8, 6))
     fig.text(0.5, 0.5, test_str,
              horizontalalignment='center', verticalalignment='center')
+
+
+@image_comparison(['ttc_type3.pdf'], style='mpl20')
+def test_ttc_type3():
+    fp = fm.FontProperties(family=['WenQuanYi Zen Hei'])
+    if Path(fm.findfont(fp)).name != 'wqy-zenhei.ttc':
+        pytest.skip('Font wqy-zenhei.ttc may be missing')
+
+    fonts = ['WenQuanYi Zen Hei', 'WenQuanYi Zen Hei Mono']
+    plt.rc('font', size=16)
+    plt.rc('pdf', fonttype=3)
+
+    figs = plt.figure(figsize=(7, len(fonts) / 2)).subfigures(len(fonts))
+    for font, fig in zip(fonts, figs):
+        fig.text(0.5, 0.5, f'{font}: {string.ascii_uppercase}', font=font,
+                 horizontalalignment='center', verticalalignment='center')
+
+
+@image_comparison(['ttc_type42.pdf'], style='mpl20')
+def test_ttc_type42():
+    fp = fm.FontProperties(family=['WenQuanYi Zen Hei'])
+    if Path(fm.findfont(fp)).name != 'wqy-zenhei.ttc':
+        pytest.skip('Font wqy-zenhei.ttc may be missing')
+
+    fonts = ['WenQuanYi Zen Hei', 'WenQuanYi Zen Hei Mono']
+    plt.rc('font', size=16)
+    plt.rc('pdf', fonttype=42)
+
+    figs = plt.figure(figsize=(7, len(fonts) / 2)).subfigures(len(fonts))
+    for font, fig in zip(fonts, figs):
+        fig.text(0.5, 0.5, f'{font}: {string.ascii_uppercase}', font=font,
+                 horizontalalignment='center', verticalalignment='center')
 
 
 @pytest.mark.parametrize('family_name, file_name',
@@ -418,21 +454,21 @@ def test_otf_font_smoke(family_name, file_name):
     fig.savefig(io.BytesIO(), format="pdf")
 
 
-@image_comparison(["truetype-conversion.pdf"])
+@image_comparison(["truetype-conversion.pdf"], style='mpl20')
 # mpltest.ttf does not have "l"/"p" glyphs so we get a warning when trying to
 # get the font extents.
 def test_truetype_conversion(recwarn):
     mpl.rcParams['pdf.fonttype'] = 3
     fig, ax = plt.subplots()
     ax.text(0, 0, "ABCDE",
-            font=Path(__file__).parent / "data/mpltest.ttf", fontsize=80)
+            font=Path(__file__).parent / "data/mpltest.ttf", fontsize=72)
     ax.set_xticks([])
     ax.set_yticks([])
 
 
 @pytest.mark.skipif(not _has_tex_package("heuristica"),
                     reason="LaTeX lacks heuristica package")
-@image_comparison(["font-heuristica.pdf"])
+@image_comparison(["font-heuristica.pdf"], style='_classic_test')
 def test_font_heuristica():
     # Heuristica uses the callothersubr operator for some glyphs
     mpl.rcParams['text.latex.preamble'] = '\n'.join((
@@ -448,7 +484,7 @@ def test_font_heuristica():
 
 @pytest.mark.skipif(not _has_tex_package("DejaVuSans"),
                     reason="LaTeX lacks DejaVuSans package")
-@image_comparison(["font-dejavusans.pdf"])
+@image_comparison(["font-dejavusans.pdf"], style='_classic_test')
 def test_font_dejavusans():
     # DejaVuSans uses the seac operator to compose characters with diacritics
     mpl.rcParams['text.latex.preamble'] = '\n'.join((
@@ -466,7 +502,7 @@ def test_font_dejavusans():
 
 @pytest.mark.skipif(not _has_tex_package("charter"),
                     reason="LaTeX lacks charter package")
-@image_comparison(["font-bitstream-charter.pdf"])
+@image_comparison(["font-bitstream-charter.pdf"], style='_classic_test')
 def test_font_bitstream_charter():
     mpl.rcParams['text.latex.preamble'] = '\n'.join((
         r'\usepackage{charter}',
@@ -696,3 +732,30 @@ def test_scatter_polar(fig_test, fig_ref):
     ax_ref = fig_ref.subplots(subplot_kw={'projection': 'polar'})
     ax_ref.scatter(theta, r, c=c, s=50)
     ax_ref.set_ylim(0, 2)
+
+
+@check_figures_equal(extensions=["pdf"], tol=1.0)
+def test_hexbin_negative_offsets(fig_test, fig_ref):
+    """
+    Test path collection culling with non-canvas-space offsets.
+
+    Hexbin uses a repeated polygon path with offsets transformed by
+    AffineDeltaTransform.  The transformed offsets are displacements, not the
+    final canvas-space marker centers, so PDF backend culling must account for
+    the transformed path bounds as well.
+    """
+    rng = np.random.default_rng(19680801)
+    x = rng.normal(size=10_000)
+    y = rng.normal(size=10_000)
+
+    ax_test = fig_test.subplots()
+    ax_test.hexbin(x, y, gridsize=25, edgecolors="none")
+    ax_test.set_xlim(-2.0, 2.0)
+    ax_test.set_ylim(-2.0, 2.0)
+    ax_test.set_axis_off()
+
+    ax_ref = fig_ref.subplots()
+    ax_ref.hexbin(x + 2.0, y + 2.0, gridsize=25, edgecolors="none")
+    ax_ref.set_xlim(0.0, 4.0)
+    ax_ref.set_ylim(0.0, 4.0)
+    ax_ref.set_axis_off()

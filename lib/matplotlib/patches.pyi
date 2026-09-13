@@ -8,7 +8,7 @@ from typing import Any, Literal, overload
 
 import numpy as np
 from numpy.typing import ArrayLike
-from .typing import ColorType, LineStyleType, CapStyleType, JoinStyleType
+from .typing import ColorType, FillRuleType, LineStyleType, CapStyleType, JoinStyleType
 
 class Patch(artist.Artist):
     zorder: float
@@ -68,6 +68,8 @@ class Patch(artist.Artist):
     def set_hatch_linewidth(self, lw: float) -> None: ...
     def get_hatch_linewidth(self) -> float: ...
     def get_hatch(self) -> str: ...
+    def set_fill_rule(self, fill_rule: FillRuleType) -> None: ...
+    def get_fill_rule(self) -> FillRuleType: ...
     def get_path(self) -> Path: ...
 
 class Shadow(Patch):
@@ -267,7 +269,6 @@ class Ellipse(Patch):
     def get_vertices(self) -> list[tuple[float, float]]: ...
     def get_co_vertices(self) -> list[tuple[float, float]]: ...
 
-
 class Annulus(Patch):
     a: float
     b: float
@@ -379,9 +380,13 @@ class BoxStyle(_Style):
             mutation_size: float,
         ) -> Path: ...
 
-    class LArrow(BoxStyle):
+    class RArrow(BoxStyle):
         pad: float
-        def __init__(self, pad: float = ...) -> None: ...
+        head_width: float
+        head_angle: float
+        def __init__(
+            self, pad: float = ..., head_width: float = ..., head_angle: float = ...
+        ) -> None: ...
         def __call__(
             self,
             x0: float,
@@ -391,7 +396,7 @@ class BoxStyle(_Style):
             mutation_size: float,
         ) -> Path: ...
 
-    class RArrow(LArrow):
+    class LArrow(RArrow):
         def __call__(
             self,
             x0: float,
@@ -401,9 +406,13 @@ class BoxStyle(_Style):
             mutation_size: float,
         ) -> Path: ...
 
-    class DArrow(BoxStyle):
+    class DArrow(RArrow):
         pad: float
-        def __init__(self, pad: float = ...) -> None: ...
+        head_width: float
+        head_angle: float
+        def __init__(
+            self, pad: float = ..., head_width: float = ..., head_angle: float = ...
+        ) -> None: ...
         def __call__(
             self,
             x0: float,

@@ -206,6 +206,7 @@ class Ticks(AttributeCopier, Line2D):
         gc.set_foreground(edgecolor, isRGBA=True)
         gc.set_linewidth(self.get_markeredgewidth())
         gc.set_alpha(self._alpha)
+        gc.set_blend_mode(self.get_blend_mode())
 
         tickvert_path = self._tick_paths[self._tick_dir]
         path_trans = self.get_transform()
@@ -1086,7 +1087,7 @@ class AxisArtist(martist.Artist):
             *self.minor_ticklabels.get_window_extents(renderer),
             self.label.get_window_extent(renderer),
             self.offsetText.get_window_extent(renderer),
-            self.line.get_window_extent(renderer),
+            self.line.get_tightbbox(renderer),
         ]
         bb = [b for b in bb if b and (b.width != 0 or b.height != 0)]
         if bb:

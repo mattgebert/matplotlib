@@ -36,7 +36,7 @@ def _get_dash_pattern(style):
     if isinstance(style, str):
         style = ls_mapper.get(style, style)
     # un-dashed styles
-    if style in ['solid', 'None']:
+    if style in ['solid', 'None', 'none', '', ' ']:
         offset = 0
         dashes = None
     # dashed styles
@@ -198,11 +198,33 @@ def _mark_every_path(markevery, tpath, affine, ax):
             # bounding box diagonal being a distance of unity:
             (x0, y0), (x1, y1) = ax.transAxes.transform([[0, 0], [1, 1]])
             scale = np.hypot(x1 - x0, y1 - y0)
-            marker_delta = np.arange(start * scale, delta[-1], step * scale)
-            # find closest actual data point that is closest to
-            # the theoretical distance along the path:
-            inds = np.abs(delta[np.newaxis, :] - marker_delta[:, np.newaxis])
-            inds = inds.argmin(axis=1)
+            marker_start = start * scale
+            marker_step = step * scale
+            if marker_step <= 0:
+                raise ValueError(
+                    f"'markevery' step must be positive, but got {step!r}")
+            # A theoretical marker can select a vertex only if the marker
+            # immediately before or after that vertex selects it.  Limit
+            # the candidates to those markers instead of materializing
+            # every marker position, which may be arbitrarily large when
+            # zoomed in far enough.
+            marker_delta = delta - np.remainder(delta - marker_start, marker_step)
+            marker_delta = np.union1d(marker_delta, marker_delta + marker_step)
+            marker_delta = marker_delta[
+                (marker_delta >= marker_start) & (marker_delta < delta[-1])]
+
+            # Find each candidate's closest actual data point without
+            # constructing a len(marker_delta) x len(delta) array.
+            right = np.searchsorted(delta, marker_delta, side="left")
+            left = np.maximum(right - 1, 0)
+            right = np.minimum(right, len(delta) - 1)
+            inds = np.where(
+                np.abs(delta[right] - marker_delta)
+                < np.abs(marker_delta - delta[left]),
+                right, left)
+            # If there are multiple vertices at a given distance, use the
+            # first one.
+            inds = np.searchsorted(delta, delta[inds], side="left")
             inds = np.unique(inds)
             # return, we are done here
             return Path(fverts[inds], _slice_or_none(codes, inds))
@@ -592,9 +614,10 @@ class Line2D(Artist):
         -----
         Setting *markevery* will still only draw markers at actual data points.
         While the float argument form aims for uniform visual spacing, it has
-        to coerce from the ideal spacing to the nearest available data point.
-        Depending on the number and distribution of data points, the result
-        may still not look evenly spaced.
+        to coerce from the ideal spacing along the drawn line to the nearest
+        available data point. Depending on the number and distribution of data
+        points, and on how jagged the line is, the result may still not look
+        evenly spaced along the x- or y-axis.
 
         When using a start offset to specify the first marker, the offset will
         be from the first data point which may be different from the first
@@ -668,6 +691,7 @@ class Line2D(Artist):
         self.set_xdata(x)
         self.set_ydata(y)
 
+    @_api.deprecated("3.12", alternative="recache(always=True)")
     def recache_always(self):
         self.recache(always=True)
 
@@ -684,7 +708,8 @@ class Line2D(Artist):
             y = self._y
 
         self._xy = np.column_stack(np.broadcast_arrays(x, y)).astype(float)
-        self._x, self._y = self._xy.T  # views
+        self._x = self._xy[:, 0]  # views of the x and y data
+        self._y = self._xy[:, 1]
 
         self._subslice = False
         if (self.axes
@@ -783,6 +808,7 @@ class Line2D(Artist):
                 self._set_gc_clip(gc)
                 gc.set_url(self.get_url())
 
+                gc.set_blend_mode(self.get_blend_mode())
                 gc.set_antialiased(self._antialiased)
                 gc.set_linewidth(self._linewidth)
 
@@ -798,8 +824,11 @@ class Line2D(Artist):
                 if self.get_sketch_params() is not None:
                     gc.set_sketch_params(*self.get_sketch_params())
 
-                # We first draw a path within the gaps if needed.
-                if self.is_dashed() and self._gapcolor is not None:
+                # We first draw a path within the gaps if needed, but only for
+                # visible dashed lines; zero-width lines would otherwise yield
+                # all-zero dashes.
+                if (self._linewidth > 0 and self.is_dashed()
+                        and self._gapcolor is not None):
                     lc_rgba = mcolors.to_rgba(self._gapcolor, self._alpha)
                     gc.set_foreground(lc_rgba, isRGBA=True)
 
@@ -812,7 +841,10 @@ class Line2D(Artist):
                 lc_rgba = mcolors.to_rgba(self._color, self._alpha)
                 gc.set_foreground(lc_rgba, isRGBA=True)
 
-                gc.set_dashes(*self._dash_pattern)
+                if self._linewidth > 0:
+                    gc.set_dashes(*self._dash_pattern)
+                else:
+                    gc.set_dashes(0, None)
                 renderer.draw_path(gc, tpath, affine.frozen())
                 gc.restore()
 
@@ -820,6 +852,7 @@ class Line2D(Artist):
             gc = renderer.new_gc()
             self._set_gc_clip(gc)
             gc.set_url(self.get_url())
+            gc.set_blend_mode(self.get_blend_mode())
             gc.set_linewidth(self._markeredgewidth)
             gc.set_antialiased(self._antialiased)
 
@@ -1156,7 +1189,7 @@ class Line2D(Artist):
 
         Parameters
         ----------
-        ls : {'-', '--', '-.', ':', '', ...} or (offset, on-off-seq)
+        ls : :mpltype:`linestyle`
             Possible values:
 
             - A string:

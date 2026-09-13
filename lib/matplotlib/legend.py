@@ -98,9 +98,11 @@ class DraggableLegend(DraggableOffsetBox):
 _legend_kw_doc_base = """
 bbox_to_anchor : `.BboxBase`, 2-tuple, or 4-tuple of floats
     Box that is used to position the legend in conjunction with *loc*.
+    This is an advanced option for free placement of the legend. For
+    most use cases, *loc* alone is sufficient.
+
     Defaults to ``axes.bbox`` (if called as a method to `.Axes.legend`) or
-    ``figure.bbox`` (if ``figure.legend``).  This argument allows arbitrary
-    placement of the legend.
+    ``figure.bbox`` (if ``figure.legend``).
 
     Bbox coordinates are interpreted in the coordinate system given by
     *bbox_transform*, with the default transform
@@ -118,6 +120,9 @@ bbox_to_anchor : `.BboxBase`, 2-tuple, or 4-tuple of floats
     center of the Axes (or figure) the following keywords can be used::
 
         loc='upper right', bbox_to_anchor=(0.5, 0.5)
+
+    For more details on legend positioning, see the
+    :ref:`legend_guide`.
 
 ncols : int, default: 1
     The number of columns that the legend has.
@@ -265,15 +270,19 @@ _loc_doc_base = """
 loc : str or pair of floats, default: {default}
     The location of the legend.
 
-    The strings ``'upper left'``, ``'upper right'``, ``'lower left'``,
-    ``'lower right'`` place the legend at the corresponding corner of the
-    {parent}.
+    The string locations place the legend at the corresponding position
+    within the bounding box, which by default is the full {parent} area.
+    The bounding box can be changed via *bbox_to_anchor*.
 
-    The strings ``'upper center'``, ``'lower center'``, ``'center left'``,
-    ``'center right'`` place the legend at the center of the corresponding edge
-    of the {parent}.
+    The positions are visualized below::
 
-    The string ``'center'`` places the legend at the center of the {parent}.
+        +--------------+--------------+---------------+
+        | 'upper left' |'upper center'| 'upper right' |
+        +--------------+--------------+---------------+
+        |'center left' |   'center'   |'center right' |
+        +--------------+--------------+---------------+
+        | 'lower left' |'lower center'| 'lower right' |
+        +--------------+--------------+---------------+
 {best}
     The location can also be a 2-tuple giving the coordinates of the lower-left
     corner of the legend in {parent} coordinates (in which case *bbox_to_anchor*
@@ -1178,33 +1187,56 @@ class Legend(Artist):
 
         bbox = Bbox.from_bounds(0, 0, width, height)
 
+        candidate_boxes = []
+        for loc_code in range(1, len(self.codes)):
+            left, bottom = self._get_anchored_bbox(loc_code, bbox,
+                                                   self.get_bbox_to_anchor(),
+                                                   renderer)
+            candidate_boxes.append((loc_code,
+                                    Bbox.from_bounds(left, bottom, width, height)))
+
+        # Every candidate box has the same width and height, with only a handful of
+        # distinct left/bottom edges. For speed we compute each point's membership
+        # in those intervals once, rather than for all 10 candidate boxes.
+        pts = [line.vertices for line in lines]
+        if offsets:
+            pts.append(np.asarray(offsets, dtype=float))
+        pts = np.concatenate(pts) if pts else np.empty((0, 2))
+        x_left = np.unique([box.x0 for _, box in candidate_boxes])
+        y_bottom = np.unique([box.y0 for _, box in candidate_boxes])
+        x, y = pts[:, 0], pts[:, 1]
+        with np.errstate(invalid='ignore'):
+            # Broadcast the (n_edges, 1) edge positions against the (n_points,)
+            # coordinates to get (n_edges, n_points) interval membership arrays.
+            in_x = ((x_left[:, np.newaxis] < x)
+                    & (x < x_left[:, np.newaxis] + width))
+            in_y = ((y_bottom[:, np.newaxis] < y)
+                    & (y < y_bottom[:, np.newaxis] + height))
+
         candidates = []
-        for idx in range(1, len(self.codes)):
-            l, b = self._get_anchored_bbox(idx, bbox,
-                                           self.get_bbox_to_anchor(),
-                                           renderer)
-            legendBox = Bbox.from_bounds(l, b, width, height)
+        for loc_code, legendBox in candidate_boxes:
+            contained_count = np.count_nonzero(
+                in_x[np.where(x_left == legendBox.x0)[0][0]]
+                & in_y[np.where(y_bottom == legendBox.y0)[0][0]])
             # XXX TODO: If markers are present, it would be good to take them
             # into account when checking vertex overlaps in the next line.
-            badness = (sum(legendBox.count_contains(line.vertices)
-                           for line in lines)
-                       + legendBox.count_contains(offsets)
+            badness = (contained_count
                        + legendBox.count_overlaps(bboxes)
                        + sum(line.intersects_bbox(legendBox, filled=False)
                              for line in lines))
-            # Include the index to favor lower codes in case of a tie.
-            candidates.append((badness, idx, (l, b)))
+            # Include the loc code to favor lower codes in case of a tie.
+            candidates.append((badness, loc_code, (legendBox.x0, legendBox.y0)))
             if badness == 0:
                 break
 
-        _, _, (l, b) = min(candidates)
+        _, _, (left, bottom) = min(candidates)
 
         if self._loc_used_default and time.perf_counter() - start_time > 1:
             _api.warn_external(
                 'Creating legend with loc="best" can be slow with large '
                 'amounts of data.')
 
-        return l, b
+        return left, bottom
 
     def contains(self, mouseevent):
         return self.legendPatch.contains(mouseevent)
@@ -1354,7 +1386,7 @@ def _parse_legend_args(axs, *args, handles=None, labels=None, **kwargs):
                            f"len(handles) = {len(handles)} "
                            f"len(labels) = {len(labels)}")
     # if got both handles and labels as kwargs, make same length
-    if handles and labels:
+    if handles is not None and labels is not None:
         handles, labels = zip(*zip(handles, labels))
 
     elif handles is not None and labels is None:
@@ -1385,6 +1417,11 @@ def _parse_legend_args(axs, *args, handles=None, labels=None, **kwargs):
 
     elif len(args) == 2:  # 2 args: user defined handles and labels.
         handles, labels = args[:2]
+        if (hasattr(handles, "__len__") and hasattr(labels, "__len__")
+                and len(handles) != len(labels)):
+            _api.warn_external(f"Mismatched number of handles and labels: "
+                               f"len(handles) = {len(handles)} "
+                               f"len(labels) = {len(labels)}")
 
     else:
         raise _api.nargs_error('legend', '0-2', len(args))

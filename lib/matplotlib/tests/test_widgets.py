@@ -4,7 +4,7 @@ import operator
 from unittest import mock
 
 import matplotlib as mpl
-from matplotlib.backend_bases import DrawEvent, KeyEvent, MouseEvent
+from matplotlib.backend_bases import DrawEvent, KeyEvent, MouseEvent, ResizeEvent
 import matplotlib.colors as mcolors
 import matplotlib.widgets as widgets
 import matplotlib.pyplot as plt
@@ -1123,6 +1123,8 @@ def test_TextBox(ax, toolbar):
 
     assert text_change_event.call_count == 3
 
+    ResizeEvent("resize_event", ax.figure.canvas)._process()  # smoke test
+
 
 def test_RadioButtons(ax):
     radio = widgets.RadioButtons(ax, ('Radio 1', 'Radio 2', 'Radio 3'))
@@ -1743,17 +1745,62 @@ def test_polygon_selector_box(ax):
         tool._box.extents, (20.0, 40.0, 30.0, 40.0))
 
 
+def test_polygon_selector_box_props_handle_props(ax):
+    props = dict(color='r')
+    handle_props = dict(marker='o', markerfacecolor='w', markeredgecolor='r')
+    box_props = dict(linestyle=':', facecolor='c', edgecolor='b')
+    box_handle_props = dict(markeredgecolor='y')
+
+    tool = widgets.PolygonSelector(
+        ax, draw_bounding_box=True,
+        props=props, handle_props=handle_props,
+        box_props=box_props, box_handle_props=box_handle_props)
+
+    for event in [
+        *polygon_place_vertex(ax, (50, 50)),
+        *polygon_place_vertex(ax, (150, 50)),
+        *polygon_place_vertex(ax, (50, 150)),
+        *polygon_place_vertex(ax, (50, 50)),
+    ]:
+        event._process()
+
+    artist = tool._selection_artist
+    assert mcolors.same_color(artist.get_color(), 'r')
+    for artist in tool._handles_artists:
+        assert artist.get_marker() == 'o'
+        assert mcolors.same_color(artist.get_markerfacecolor(), 'w')
+        assert mcolors.same_color(artist.get_markeredgecolor(), 'r')
+
+    box_artist = tool._box._selection_artist
+    assert box_artist.get_linestyle() == ':'
+    assert mcolors.same_color(box_artist.get_facecolor(), 'c')
+    assert mcolors.same_color(box_artist.get_edgecolor(), 'b')
+    for artist in tool._box._handles_artists:
+        # marker and markerfacecolor are inherited from handle_props
+        # markeredgecolor is overridden by box_handle_props.
+        assert artist.get_marker() == 'o'
+        assert mcolors.same_color(artist.get_markerfacecolor(), 'w')
+        assert mcolors.same_color(artist.get_markeredgecolor(), 'y')
+
+
 def test_polygon_selector_clear_method(ax):
     onselect = mock.Mock(spec=noop, return_value=None)
     tool = widgets.PolygonSelector(ax, onselect)
+    artist = tool._selection_artist
+
+    tool.clear()
+    assert not tool._selection_completed
+    x0, x1 = ax.get_xlim()
+    y0, y1 = ax.get_ylim()
+    center = [((x0 + x1) / 2, (y0 + y1) / 2)]
+    # Cursor resets to center of the axes when last position is unknown.
+    np.testing.assert_equal(artist.get_xydata(), center)
 
     for result in ([(50, 50), (150, 50), (50, 150), (50, 50)],
                    [(50, 50), (100, 50), (50, 150), (50, 50)]):
         for xy in result:
             for event in polygon_place_vertex(ax, xy):
                 event._process()
-
-        artist = tool._selection_artist
 
         assert tool._selection_completed
         assert tool.get_visible()
@@ -1763,7 +1810,8 @@ def test_polygon_selector_clear_method(ax):
 
         tool.clear()
         assert not tool._selection_completed
-        np.testing.assert_equal(artist.get_xydata(), [(0, 0)])
+        # Cursor resets to last known position.
+        np.testing.assert_equal(artist.get_xydata(), [result[-1]])
 
 
 @pytest.mark.parametrize("horizOn", [False, True])
@@ -1843,3 +1891,19 @@ def test_parent_axes_removal():
     evt = DrawEvent('draw_event', fig.canvas, renderer)
     radio._clear(evt)
     checks._clear(evt)
+
+
+def test_cursor_overlapping_axes_blitting_warning():
+    """Test that a warning is raised and useblit is disabled for overlapping axes."""
+    fig = plt.figure()
+    ax1 = fig.add_axes([0.1, 0.1, 0.8, 0.8])
+    ax2 = fig.add_axes([0.2, 0.2, 0.6, 0.6])  # Explicitly overlaps ax1
+
+    match_text = (
+        "Cursor blitting is currently not supported on "
+        "overlapping axes"
+    )
+    with pytest.warns(UserWarning, match=match_text):
+        cursor = widgets.Cursor(ax1, useblit=True)
+
+    assert cursor.useblit is False

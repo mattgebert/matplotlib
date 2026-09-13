@@ -12,14 +12,14 @@ jobs:
       contents: read
       checks: write
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
 
       - name: Set up Python 3
-        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
-          python-version: '3.11'
+          python-version: '3.12'
 
       - name: Set up reviewdog
         uses: reviewdog/action-setup@d8a7baabd7f3e8544ee4dbde3ee41d0011c3a93f  # v1.5.0
@@ -33,7 +33,7 @@ jobs:
         run: |
           set -o pipefail
           tox -e stubtest | \
-              sed -e "s!.tox/stubtest/lib/python3.11/site-packages!lib!g" | \
+              sed -e "s!.tox/stubtest/lib/python3.12/site-packages!lib!g" | \
               reviewdog \
                 -efm '%Eerror: %m' \
                 -efm '%CStub: in file %f:%l' \

@@ -16,7 +16,7 @@ from matplotlib.backend_tools import Cursors
 import gi
 # The GTK3/GTK4 backends will have already called `gi.require_version` to set
 # the desired GTK.
-from gi.repository import Gdk, Gio, GLib, Gtk
+from gi.repository import Gdk, Gio, GLib, Gtk, GdkPixbuf
 
 
 try:
@@ -144,8 +144,11 @@ class _FigureManagerGTK(FigureManagerBase):
 
         if gtk_ver == 3:
             icon_ext = "png" if sys.platform == "win32" else "svg"
-            self.window.set_icon_from_file(
+            small_icon = GdkPixbuf.Pixbuf.new_from_file(
+                str(cbook._get_data_path(f"images/matplotlib_small.{icon_ext}")))
+            large_icon = GdkPixbuf.Pixbuf.new_from_file(
                 str(cbook._get_data_path(f"images/matplotlib.{icon_ext}")))
+            self.window.set_icon_list([small_icon, large_icon])
 
         self.vbox = Gtk.Box()
         self.vbox.set_property("orientation", Gtk.Orientation.VERTICAL)
@@ -275,7 +278,7 @@ class _NavigationToolbar2GTK(NavigationToolbar2):
         self.message.set_markup(f'<small>{escaped}</small>')
 
     def draw_rubberband(self, event, x0, y0, x1, y1):
-        height = self.canvas.figure.bbox.height
+        height = self.canvas.get_width_height(physical=True)[1]
         y1 = height - y1
         y0 = height - y0
         rect = [int(val) for val in (x0, y0, x1 - x0, y1 - y0)]

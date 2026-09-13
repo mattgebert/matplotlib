@@ -100,6 +100,9 @@ class _Converter:
 class _MagickConverter:
     def __call__(self, orig, dest):
         try:
+            # ImageMagick may not be permitted to follow a symlink, so resolve it
+            if orig.is_symlink():
+                orig = orig.resolve()
             subprocess.run(
                 [mpl._get_executable_info("magick").executable, orig, dest],
                 check=True)
@@ -398,11 +401,16 @@ def calculate_rms(expected_image, actual_image):
 
 def _load_image(path):
     img = Image.open(path)
-    # In an RGBA image, if the smallest value in the alpha channel is 255, all
-    # values in it must be 255, meaning that the image is opaque. If so,
-    # discard the alpha channel so that it may compare equal to an RGB image.
-    if img.mode != "RGBA" or img.getextrema()[3][0] == 255:
-        img = img.convert("RGB")
+    if img.mode != "RGB":
+        # If we have anything other than RGB(A) (e.g., a paletted image), convert it
+        # to RGBA.
+        if img.mode != "RGBA":
+            img = img.convert("RGBA")
+        # In an RGBA image, if the smallest value in the alpha channel is 255, all
+        # values in it must be 255, meaning that the image is opaque. If so, discard the
+        # alpha channel so that it may compare equal to an RGB image.
+        if img.getextrema()[3][0] == 255:
+            img = img.convert("RGB")
     return np.asarray(img)
 
 

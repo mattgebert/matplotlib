@@ -1,7 +1,13 @@
-import matplotlib.pyplot as plt
-from matplotlib.testing.decorators import image_comparison
+import numpy as np
 
-from mpl_toolkits.axisartist import AxisArtistHelperRectlinear
+import matplotlib as mpl
+import matplotlib.pyplot as plt
+from matplotlib.projections import PolarAxes
+from matplotlib.testing.decorators import image_comparison
+from matplotlib.transforms import Affine2D
+
+from mpl_toolkits.axisartist import (AxisArtistHelperRectlinear, GridHelperCurveLinear,
+                                     HostAxes)
 from mpl_toolkits.axisartist.axis_artist import (AxisArtist, AxisLabel,
                                                  LabelBase, Ticks, TickLabels)
 
@@ -24,12 +30,8 @@ def test_ticks():
     ax.add_artist(ticks_out)
 
 
-# TODO: tighten tolerance after baseline image is regenerated for text overhaul
-@image_comparison(['axis_artist_labelbase.png'], style='default', tol=0.02)
+@image_comparison(['axis_artist_labelbase.png'], style='default')
 def test_labelbase():
-    # Remove this line when this test image is regenerated.
-    plt.rcParams['text.kerning_factor'] = 6
-
     fig, ax = plt.subplots()
 
     ax.plot([0.5], [0.5], "o")
@@ -42,12 +44,8 @@ def test_labelbase():
     ax.add_artist(label)
 
 
-# TODO: tighten tolerance after baseline image is regenerated for text overhaul
-@image_comparison(['axis_artist_ticklabels.png'], style='default', tol=0.03)
+@image_comparison(['axis_artist_ticklabels.png'], style='default')
 def test_ticklabels():
-    # Remove this line when this test image is regenerated.
-    plt.rcParams['text.kerning_factor'] = 6
-
     fig, ax = plt.subplots()
 
     ax.xaxis.set_visible(False)
@@ -78,12 +76,8 @@ def test_ticklabels():
     ax.set_ylim(0, 1)
 
 
-# TODO: tighten tolerance after baseline image is regenerated for text overhaul
-@image_comparison(['axis_artist.png'], style='default', tol=0.03)
+@image_comparison(['axis_artist.png'], style='default')
 def test_axis_artist():
-    # Remove this line when this test image is regenerated.
-    plt.rcParams['text.kerning_factor'] = 6
-
     fig, ax = plt.subplots()
 
     ax.xaxis.set_visible(False)
@@ -92,7 +86,9 @@ def test_axis_artist():
     for loc in ('left', 'right', 'bottom'):
         helper = AxisArtistHelperRectlinear.Fixed(ax, loc=loc)
         axisline = AxisArtist(ax, helper, offset=None, axis_direction=loc)
-        axisline.major_ticks.set_tick_direction("in")
+        axisline.major_ticks.set_tick_direction({
+            "left": "in", "right": "out", "bottom": "inout",
+        }[loc])
         ax.add_artist(axisline)
 
     # Settings for bottom AxisArtist.
@@ -100,3 +96,24 @@ def test_axis_artist():
     axisline.label.set_pad(5)
 
     ax.set_ylabel("Test")
+
+
+@mpl.style.context('default')
+def test_axisartist_tightbbox():
+    fig = plt.figure()
+    tr = Affine2D().scale(np.pi / 180., 1.) + PolarAxes.PolarTransform()
+    grid_helper = GridHelperCurveLinear(tr)
+    ax = fig.add_subplot(axes_class=HostAxes, grid_helper=grid_helper)
+    ax.axis["lon"] = ax.new_floating_axis(1, 9)
+
+    ax.set_xlim(-5, 12)
+    ax.set_ylim(-5, 10)
+
+    ax.axis['lon'].major_ticklabels.set_visible(False)
+
+    # Since the labels are invisible and the lines are clipped to the axes,
+    # the axis's tight bbox should be contained in the axes box.
+    renderer = fig._get_renderer()
+    tight_points = ax.axis['lon'].get_tightbbox(renderer).get_points()
+    for point in tight_points:
+        assert ax.bbox.contains(*point)

@@ -828,11 +828,8 @@ def _mask_tester(norm_instance, vals):
     assert_array_equal(masked_array.mask, norm_instance(masked_array).mask)
 
 
-@image_comparison(['levels_and_colors.png'])
+@image_comparison(['levels_and_colors.png'], style='mpl20')
 def test_cmap_and_norm_from_levels_and_colors():
-    # Remove this line when this test image is regenerated.
-    plt.rcParams['pcolormesh.snap'] = False
-
     data = np.linspace(-2, 4, 49).reshape(7, 7)
     levels = [-1, 2, 2.5, 3]
     colors = ['red', 'green', 'blue', 'yellow', 'black']
@@ -847,11 +844,8 @@ def test_cmap_and_norm_from_levels_and_colors():
     ax.tick_params(labelleft=False, labelbottom=False)
 
 
-@image_comparison(['boundarynorm_and_colorbar.png'], tol=1.0)
+@image_comparison(['boundarynorm_and_colorbar.png'], style='_classic_test')
 def test_boundarynorm_and_colorbarbase():
-    # Remove this line when this test image is regenerated.
-    plt.rcParams['pcolormesh.snap'] = False
-
     # Make a figure and axes with dimensions as desired.
     fig = plt.figure()
     ax1 = fig.add_axes((0.05, 0.80, 0.9, 0.15))
@@ -952,6 +946,11 @@ def test_rgb_to_hsv_int():
     assert_array_equal(mcolors.rgb_to_hsv((0, 1, 0)), (1/3, 1, 1))  # green
 
 
+def test_hsv_to_rgb_int():
+    # Test that int hsv values (still range 0-1) are processed correctly.
+    assert_array_equal(mcolors.hsv_to_rgb((0, 1, 1)), (1, 0, 0))  # red
+
+
 def test_autoscale_masked():
     # Test for #2336. Previously fully masked data would trigger a ValueError.
     data = np.ma.masked_all((12, 20))
@@ -959,7 +958,7 @@ def test_autoscale_masked():
     plt.draw()
 
 
-@image_comparison(['light_source_shading_topo.png'])
+@image_comparison(['light_source_shading_topo.png'], style='_classic_test')
 def test_light_source_topo_surface():
     """Shades a DEM using different v.e.'s and blend modes."""
     dem = cbook.get_sample_data('jacksboro_fault_dem.npz')
@@ -1791,16 +1790,30 @@ def test_is_color_like(input, expected):
     assert is_color_like(input) is expected
 
 
-def test_colorizer_vmin_vmax():
+def test_colorizer_vmin_vmax_clip():
     ca = mcolorizer.Colorizer()
-    assert ca.vmin is None
-    assert ca.vmax is None
+    assert len(ca.vmin) == 1
+    assert len(ca.vmax) == 1
+    assert ca.vmin[0] is None
+    assert ca.vmax[0] is None
     ca.vmin = 1
     ca.vmax = 3
-    assert ca.vmin == 1.0
-    assert ca.vmax == 3.0
+    assert ca.vmin == (1.0, )
+    assert ca.vmax == (3.0, )
     assert ca.norm.vmin == 1.0
     assert ca.norm.vmax == 3.0
+    assert ca.clip == (False, )
+
+    ca = mcolorizer.Colorizer('BiOrangeBlue')
+    assert len(ca.vmin) == 2
+    assert len(ca.vmax) == 2
+    ca.vmin = (1, 2)
+    ca.vmax = (3, 4)
+    assert ca.vmin == (1.0, 2.0)
+    assert ca.vmax == (3.0, 4.0)
+    assert ca.norm.vmin == (1.0, 2.0)
+    assert ca.norm.vmax == (3.0, 4.0)
+    assert ca.clip == (False, False)
 
 
 def test_LinearSegmentedColormap_from_list_color_alpha_tuple():
@@ -1834,8 +1847,15 @@ def test_LinearSegmentedColormap_from_list_value_color_tuple():
     )
 
 
-@image_comparison(['test_norm_abc.png'], remove_text=True,
-                   tol=0 if platform.machine() == 'x86_64' else 0.05)
+def test_LinearSegmentedColormap_from_list_repeat_values():
+    # Smoke test that we can pass repeated values to make a solid band of color
+    # followed by a linear ramp.
+    value_color_tuples = [(0, "red"), (0.6, "red"), (0.6, "blue"), (1, "green")]
+    mcolors.LinearSegmentedColormap.from_list("lsc", value_color_tuples, N=11)
+
+
+@image_comparison(['test_norm_abc.png'], remove_text=True, style='_classic_test',
+                  tol=0 if platform.machine() == 'x86_64' else 0.05)
 def test_norm_abc():
 
     class CustomHalfNorm(mcolors.Norm):
@@ -1873,25 +1893,30 @@ def test_norm_abc():
         def n_components(self):
             return 1
 
-    fig, axes = plt.subplots(2,2)
+    fig, axes = plt.subplots(2, 2)
 
-    r = np.linspace(-1, 3, 16*16).reshape((16,16))
+    r = np.linspace(-1, 3, 16*16).reshape((16, 16))
     norm = CustomHalfNorm()
     colorizer = mpl.colorizer.Colorizer(cmap='viridis', norm=norm)
-    c = axes[0,0].imshow(r, colorizer=colorizer)
-    axes[0,1].pcolor(r, colorizer=colorizer)
-    axes[1,0].contour(r, colorizer=colorizer)
-    axes[1,1].contourf(r, colorizer=colorizer)
+    c = axes[0, 0].imshow(r, colorizer=colorizer)
+    axes[0, 1].pcolor(r, colorizer=colorizer)
+    axes[1, 0].contour(r, colorizer=colorizer)
+    axes[1, 1].contourf(r, colorizer=colorizer)
 
 
 def test_close_error_name():
     with pytest.raises(
         KeyError,
         match=(
-            "'grays' is not a valid value for colormap. "
-            "Did you mean one of ['gray', 'Grays', 'gray_r']?"
-        )):
+            r"'grays' is not a valid value for colormap\. "
+            r"Did you mean one of: 'gray', 'Grays', 'gray_r'\?")):
         matplotlib.colormaps["grays"]
+    with pytest.raises(
+        KeyError,
+        match=(
+            "'set' is not a valid value for sequence_name. "
+            "Did you mean one of: 'Set3', 'Set2', 'Set1'?")):
+        matplotlib.color_sequences["set"]
 
 
 def test_multi_norm_creation():
@@ -1987,7 +2012,7 @@ def test_mult_norm_call_types():
     mn.vmin = (-2, -2)
     mn.vmax = (2, 2)
 
-    vals = np.arange(6).reshape((3,2))
+    vals = np.arange(6).reshape((3, 2))
     target = np.ma.array([(0.5, 0.75),
                           (1., 1.25),
                           (1.5, 1.75)])
@@ -2198,6 +2223,30 @@ def test_colorizer_multinorm_explicit():
     data = [0.1, 0.2]
     res = (0.098039, 0.374510, 0.65098, 1.)
     assert_array_almost_equal(ca.to_rgba(data), res)
+
+
+def test_get_set_clim_raises():
+    fig, ax = plt.subplots(1, 1)
+    x_0 = np.arange(9, dtype='float32').reshape(3, 3)
+    x_1 = np.arange(9, dtype='float32').reshape(3, 3).T
+    colorizing_artist = ax.imshow((x_0, x_1), cmap='BiPeak', interpolation='nearest')
+
+    # test get_clim
+    with pytest.raises(RuntimeError,
+                       match=("cannot be used with a multi-component")):
+        colorizing_artist.get_clim()
+
+    res = [[0, 0], [8, 8]]
+    assert_array_almost_equal(colorizing_artist.colorizer.get_clim(), res)
+
+    # test set_clim
+    with pytest.raises(RuntimeError,
+                       match=("cannot be used with a multi-component")):
+        colorizing_artist.set_clim(vmin=(1, 1))
+
+    colorizing_artist.colorizer.set_clim(vmin=(2, 2), vmax=(5, 5))
+    res = [[2, 2], [5, 5]]
+    assert_array_almost_equal(colorizing_artist.colorizer.get_clim(), res)
 
 
 def test_invalid_cmap_n_components_zero():

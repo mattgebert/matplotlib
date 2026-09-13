@@ -92,7 +92,7 @@ def composite_images(images, renderer, magnification=1.0):
         if data is not None:
             x *= magnification
             y *= magnification
-            parts.append((data, x, y, image._get_scalar_alpha()))
+            parts.append((data, x, y))
             bboxes.append(
                 Bbox([[x, y], [x + data.shape[1], y + data.shape[0]]]))
 
@@ -104,10 +104,10 @@ def composite_images(images, renderer, magnification=1.0):
     output = np.zeros(
         (int(bbox.height), int(bbox.width), 4), dtype=np.uint8)
 
-    for data, x, y, alpha in parts:
+    for data, x, y in parts:
         trans = Affine2D().translate(x - bbox.x0, y - bbox.y0)
-        _image.resample(data, output, trans, _image.NEAREST,
-                        resample=False, alpha=alpha)
+        # Agg resampler assumes data is not premultiplied when dtype is uint8
+        _image.resample(data, output, trans, _image.NEAREST, resample=False)
 
     return output, bbox.x0 / magnification, bbox.y0 / magnification
 
@@ -151,7 +151,8 @@ def _draw_list_compositing_images(
 
         for a in artists:
             if (isinstance(a, _ImageBase) and a.can_composite() and
-                    a.get_clip_on() and not a.get_clip_path()):
+                    a.get_clip_on() and not a.get_clip_path() and
+                    a.get_blend_mode() == "normal"):
                 image_group.append(a)
             else:
                 flush_images()
@@ -209,9 +210,15 @@ def _resample(
 
     # When an output pixel falls exactly on the edge between two input pixels, the Agg
     # resampler will use the right input pixel as the nearest neighbor.  We want the
-    # left input pixel to be chosen instead, so we flip the supplied transform.
+    # left input pixel to be chosen instead, so we flip the input data and the supplied
+    # transform.  If origin != 'upper', the transform will already include a flip in the
+    # vertical direction.
     if interpolation == 'nearest':
-        transform += Affine2D().translate(-out.shape[1], -out.shape[0]).scale(-1, -1)
+        transform = Affine2D().translate(-data.shape[1], 0).scale(-1, 1) + transform
+        data = np.flip(data, axis=1)
+        if image_obj.origin == 'upper':
+            transform = Affine2D().translate(0, -data.shape[0]).scale(1, -1) + transform
+            data = np.flip(data, axis=0)
 
     _image.resample(data, out, transform,
                     _interpd_[interpolation],
@@ -219,10 +226,6 @@ def _resample(
                     alpha,
                     image_obj.get_filternorm(),
                     image_obj.get_filterrad())
-
-    # Because we flipped the supplied transform, we then flip the output image back.
-    if interpolation == 'nearest':
-        out = np.flip(out, axis=(0, 1))
 
     return out
 
@@ -279,7 +282,14 @@ class _ImageBase(mcolorizer.ColorizingArtist):
         self.set_filternorm(filternorm)
         self.set_filterrad(filterrad)
         self.set_interpolation(interpolation)
-        self.set_interpolation_stage(interpolation_stage)
+        if isinstance(self.norm, mcolors.MultiNorm):
+            if interpolation_stage not in [None, 'data', 'auto']:
+                raise ValueError("when using multivariate color mapping 'data' "
+                                 "is the only valid interpolation_stage, but got "
+                                 f"{interpolation_stage}")
+            self.set_interpolation_stage('data')
+        else:
+            self.set_interpolation_stage(interpolation_stage)
         self.set_resample(resample)
         self.axes = ax
 
@@ -360,6 +370,9 @@ class _ImageBase(mcolorizer.ColorizingArtist):
             - a (M, N) array interpreted as scalar (greyscale) image,
               with one of the dtypes `~numpy.float32`, `~numpy.float64`,
               `~numpy.float128`, `~numpy.uint16` or `~numpy.uint8`.
+            - a (M, N) structured array with K fields for multivariate colormapping.
+              This must be used with a `.BivarColormap` (K=2) or generally with a
+              K-component `.MultivarColormap`.
             - (M, N, 4) RGBA image with a dtype of `~numpy.float32`,
               `~numpy.float64`, `~numpy.float128`, or `~numpy.uint8`.
 
@@ -408,7 +421,13 @@ class _ImageBase(mcolorizer.ColorizingArtist):
         magnified_extents = clipped_bbox.extents * magnification
         if ((not unsampled) and round_to_pixel_border):
             # Round to the nearest output pixel
-            magnified_bbox = Bbox.from_extents((magnified_extents + 0.5).astype(int))
+            # Add a tiny fudge amount to account for numerical precision loss
+            # on the two sides away from the Agg anchor point (x0, y1)
+            x0 = np.floor(magnified_extents[0] + 0.5)  # round half up
+            y0 = np.ceil(magnified_extents[1] - 0.5 - 1e-8)  # round half down
+            x1 = np.floor(magnified_extents[2] + 0.5 + 1e-8)  # round half up
+            y1 = np.ceil(magnified_extents[3] - 0.5)  # round half down
+            magnified_bbox = Bbox.from_extents([x0, y0, x1, y1])
         else:
             magnified_bbox = Bbox.from_extents(magnified_extents)
 
@@ -442,8 +461,6 @@ class _ImageBase(mcolorizer.ColorizingArtist):
             if not (A.ndim == 2 or A.ndim == 3 and A.shape[-1] in (3, 4)):
                 raise ValueError(f"Invalid shape {A.shape} for image data")
 
-            float_rgba_in = A.ndim == 3 and A.shape[-1] == 4 and A.dtype.kind == 'f'
-
             # if antialiased, this needs to change as window sizes
             # change:
             interpolation_stage = self._interpolation_stage
@@ -463,30 +480,45 @@ class _ImageBase(mcolorizer.ColorizingArtist):
                 # input data is not going to match the size on the screen so we
                 # have to resample to the correct number of pixels
 
-                if A.dtype.kind == 'f':  # Float dtype: scale to same dtype.
-                    scaled_dtype = np.dtype("f8" if A.dtype.itemsize > 4 else "f4")
-                    if scaled_dtype.itemsize < A.dtype.itemsize:
-                        _api.warn_external(f"Casting input data from {A.dtype}"
-                                           f" to {scaled_dtype} for imshow.")
-                else:  # Int dtype, likely.
-                    # TODO slice input array first
-                    # Scale to appropriately sized float: use float32 if the
-                    # dynamic range is small, to limit the memory footprint.
-                    da = A.max().astype("f8") - A.min().astype("f8")
-                    scaled_dtype = "f8" if da > 1e8 else "f4"
+                if A.dtype.fields is None:  # scalar data and colormap
+                    arrs, norms, dtypes = [A], [self.norm], [A.dtype]
+                else:  # using a multivariate colormap
+                    arrs = [A[f] for f in A.dtype.fields]
+                    norms = self.norm.norms
+                    dtypes = [A.dtype.fields[f][0] for f in A.dtype.fields]
 
-                # resample the input data to the correct resolution and shape
-                A_resampled = _resample(self, A.astype(scaled_dtype), out_shape, t)
+                def get_scaled_dtype(A):
+                    # gets the scaled dtype
+                    if A.dtype.kind == 'f':  # Float dtype: scale to same dtype.
+                        scaled_dtype = np.dtype('f8' if A.dtype.itemsize > 4 else 'f4')
+                        if scaled_dtype.itemsize < A.dtype.itemsize:
+                            _api.warn_external(f"Casting input data from {A.dtype}"
+                                               f" to {scaled_dtype} for imshow.")
+                    else:  # Int dtype, likely.
+                        # TODO slice input array first
+                        # Scale to appropriately sized float: use float32 if the
+                        # dynamic range is small, to limit the memory footprint.
+                        da = A.max().astype("f8") - A.min().astype("f8")
+                        scaled_dtype = "f8" if da > 1e8 else "f4"
+
+                    return scaled_dtype
+
+                A_resampled = [_resample(self,
+                                         a.astype(get_scaled_dtype(a)),
+                                         out_shape, t)
+                               for a in arrs]
 
                 # if using NoNorm, cast back to the original datatype
-                if isinstance(self.norm, mcolors.NoNorm):
-                    A_resampled = A_resampled.astype(A.dtype)
+                for i, n in enumerate(norms):
+                    if isinstance(n, mcolors.NoNorm):
+                        A_resampled[i] = A_resampled[i].astype(dtypes[i])
 
                 # Compute out_mask (what screen pixels include "bad" data
                 # pixels) and out_alpha (to what extent screen pixels are
                 # covered by data pixels: 0 outside the data extent, 1 inside
                 # (even for bad data), and intermediate values at the edges).
-                mask = (np.where(A.mask, np.float32(np.nan), np.float32(1))
+                mask = (np.where(self._getmaskarray(A),
+                                 np.float32(np.nan), np.float32(1))
                         if A.mask.shape == A.shape  # nontrivial mask
                         else np.ones_like(A, np.float32))
                 # we always have to interpolate the mask to account for
@@ -499,8 +531,13 @@ class _ImageBase(mcolorizer.ColorizingArtist):
                 alpha = self.get_alpha()
                 if alpha is not None and np.ndim(alpha) > 0:
                     out_alpha *= _resample(self, alpha, out_shape, t, resample=True)
-                # mask and run through the norm
-                resampled_masked = np.ma.masked_array(A_resampled, out_mask)
+
+                # mask
+                resampled_masked = [np.ma.masked_array(r, out_mask)
+                                    for r in A_resampled]
+
+                if A.dtype.fields is None:
+                    resampled_masked = resampled_masked[0]
                 res = self.norm(resampled_masked)
             else:
                 if A.ndim == 2:  # interpolation_stage = 'rgba'
@@ -527,13 +564,22 @@ class _ImageBase(mcolorizer.ColorizingArtist):
                 # Resample in premultiplied alpha space.  (TODO: Consider
                 # implementing premultiplied-space resampling in
                 # span_image_resample_rgba_affine::generate?)
-                if float_rgba_in and np.ndim(alpha) == 0 and np.any(A[..., 3] < 1):
-                    # Do not modify original RGBA input
-                    A = A.copy()
-                A[..., :3] *= A[..., 3:]
+                # Multiplying the whole array and then restoring the alpha channel
+                # is faster than an in-place multiply of the strided A[..., :3]
+                # view.  If alpha is uniformly 1, premultiplication can be skipped.
+                alpha_in = A[..., 3]
+                if (alpha_in != 1).any():
+                    A = A * alpha_in[..., None]
+                    A[..., 3] = alpha_in
                 res = _resample(self, A, out_shape, t)
-                np.divide(res[..., :3], res[..., 3:], out=res[..., :3],
-                            where=res[..., 3:] != 0)
+                # Demultiply.  Zeroes in the divisor are replaced by ones,
+                # which leaves the corresponding (premultiplied) RGB values
+                # untouched.  Dividing the whole contiguous array is several
+                # times faster than np.divide(..., where=...) into the strided
+                # res[..., :3] view.
+                alpha_out = res[..., 3].copy()
+                res /= np.where(alpha_out != 0, alpha_out, 1)[..., None]
+                res[..., 3] = alpha_out
                 if post_apply_alpha:
                     res[..., 3] *= alpha
 
@@ -611,7 +657,7 @@ class _ImageBase(mcolorizer.ColorizingArtist):
         # actually render the image.
         gc = renderer.new_gc()
         self._set_gc_clip(gc)
-        gc.set_alpha(self._get_scalar_alpha())
+        gc.set_blend_mode(self.get_blend_mode())
         gc.set_url(self.get_url())
         gc.set_gid(self.get_gid())
         if (renderer.option_scale_image()  # Renderer supports transform kwarg.
@@ -619,6 +665,7 @@ class _ImageBase(mcolorizer.ColorizingArtist):
                 and self.get_transform().is_affine):
             im, l, b, trans = self.make_image(renderer, unsampled=True)
             if im is not None:
+                gc.set_alpha(self._get_scalar_alpha())
                 trans = Affine2D().scale(im.shape[1], im.shape[0]) + trans
                 renderer.draw_image(gc, l, b, im, trans)
         else:
@@ -661,8 +708,15 @@ class _ImageBase(mcolorizer.ColorizingArtist):
         """
         A = cbook.safe_masked_invalid(A, copy=True)
         if A.dtype != np.uint8 and not np.can_cast(A.dtype, float, "same_kind"):
-            raise TypeError(f"Image data of dtype {A.dtype} cannot be "
-                            f"converted to float")
+            if A.dtype.fields is None:
+                raise TypeError(f"Image data of dtype {A.dtype} cannot be "
+                                f"converted to float")
+            else:
+                for key in A.dtype.fields:
+                    if not np.can_cast(A[key].dtype, float, "same_kind"):
+                        raise TypeError(f"Image data of dtype {A.dtype} cannot be "
+                                        f"converted to a sequence of floats")
+
         if A.ndim == 3 and A.shape[-1] == 1:
             A = A.squeeze(-1)  # If just (M, N, 1), assume scalar and apply colormap.
         if not (A.ndim == 2 or A.ndim == 3 and A.shape[-1] in [3, 4]):
@@ -1779,12 +1833,14 @@ def _pil_png_to_float_array(pil_png):
     raise ValueError(f"Unknown PIL rawmode: {rawmode}")
 
 
+@_api.deprecated('3.11', alternative="Pillow's `PIL.Image.Image.thumbnail`")
 def thumbnail(infile, thumbfile, scale=0.1, interpolation='bilinear',
               preview=False):
     """
     Make a thumbnail of image in *infile* with output filename *thumbfile*.
 
-    See :doc:`/gallery/misc/image_thumbnail_sgskip`.
+    See `Pillow for a replacement
+    <https://pillow.readthedocs.io/en/stable/handbook/tutorial.html#create-jpeg-thumbnails>`_.
 
     Parameters
     ----------

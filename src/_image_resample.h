@@ -589,8 +589,9 @@ public:
             if (dx >= 0 && dx < m_out_width &&
                 dy >= 0 && dy < m_out_height) {
                 const double *coord = m_mesh + (int(dy) * m_out_width + int(dx)) * 2;
-                *x = int(coord[0] * agg::image_subpixel_scale + offset);
-                *y = int(coord[1] * agg::image_subpixel_scale + offset);
+                // Add a tiny fudge amount to account for numerical precision loss
+                *x = int(coord[0] * agg::image_subpixel_scale + offset + 1e-8);
+                *y = int(coord[1] * agg::image_subpixel_scale + offset + 1e-8);
             }
         }
     }
@@ -692,6 +693,20 @@ static void get_filter(const resample_params_t &params,
 }
 
 
+template<typename renderer_t, typename rasterizer_t, typename span_gen_t>
+void render_image(renderer_t &renderer, rasterizer_t &rasterizer, span_gen_t &span_gen, double alpha)
+{
+    auto span_alloc = agg::span_allocator<typename renderer_t::color_type>{};
+    auto conv_alpha = span_conv_alpha<typename renderer_t::color_type>{alpha};
+    auto span_conv = agg::span_converter{span_gen, conv_alpha};
+
+    auto renderer_scanline = agg::renderer_scanline_aa{renderer, span_alloc, span_conv};
+
+    auto scanline = agg::scanline32_u8{};
+    agg::render_scanlines(rasterizer, scanline, renderer_scanline);
+}
+
+
 template<typename color_type>
 void resample(
     const void *input, int in_width, int in_height,
@@ -703,19 +718,7 @@ void resample(
     using input_pixfmt_t = typename type_mapping_t::pixfmt_type;
     using output_pixfmt_t = typename type_mapping_t::pixfmt_type;
 
-    using renderer_t = agg::renderer_base<output_pixfmt_t>;
-    using rasterizer_t = agg::rasterizer_scanline_aa<agg::rasterizer_sl_clip_dbl>;
-    using scanline_t = agg::scanline32_u8;
-
-    using reflect_t = agg::wrap_mode_reflect;
-    using image_accessor_wrap_t = agg::image_accessor_wrap<input_pixfmt_t, reflect_t, reflect_t>;
-    using image_accessor_clip_t = agg::image_accessor_clip<input_pixfmt_t>;
-
-    using span_alloc_t = agg::span_allocator<color_type>;
-    using span_conv_alpha_t = span_conv_alpha<color_type>;
-
-    using nn_affine_interpolator_t = accurate_interpolator_affine_nn<>;
-    using affine_interpolator_t = agg::span_interpolator_linear<>;
+    // Need to define this class explicitly because the first argument cannot be deduced
     using arbitrary_interpolator_t =
         agg::span_interpolator_adaptor<agg::span_interpolator_linear<>, lookup_distortion>;
 
@@ -733,28 +736,24 @@ void resample(
         params.interpolation = NEAREST;
     }
 
-    span_alloc_t span_alloc;
-    rasterizer_t rasterizer;
-    scanline_t scanline;
-
-    span_conv_alpha_t conv_alpha(params.alpha);
-
     agg::rendering_buffer input_buffer;
     input_buffer.attach(
         (unsigned char *)input, in_width, in_height, in_width * itemsize);
     input_pixfmt_t input_pixfmt(input_buffer);
-    image_accessor_wrap_t input_accessor_wrap(input_pixfmt);
-    image_accessor_clip_t input_accessor_clip(input_pixfmt, color_type::no_color());
+    auto image_accessor_wrap =
+        agg::image_accessor_wrap<input_pixfmt_t, agg::wrap_mode_reflect, agg::wrap_mode_reflect>{input_pixfmt};
+    auto image_accessor_clip = agg::image_accessor_clip{input_pixfmt, color_type::no_color()};
 
     agg::rendering_buffer output_buffer;
     output_buffer.attach(
         (unsigned char *)output, out_width, out_height, out_width * itemsize);
     output_pixfmt_t output_pixfmt(output_buffer);
-    renderer_t renderer(output_pixfmt);
+    auto renderer = agg::renderer_base{output_pixfmt};
 
     agg::trans_affine inverted = params.affine;
     inverted.invert();
 
+    auto rasterizer = agg::rasterizer_scanline_aa<agg::rasterizer_sl_clip_dbl>{};
     rasterizer.clip_box(0, 0, out_width, out_height);
 
     agg::path_storage path;
@@ -780,10 +779,15 @@ void resample(
             params.affine.transform(&right, &top);
             if (left > right) { std::swap(left, right); }
             if (bottom > top) { std::swap(top, bottom); }
-            if (round(left) < left) { left = round(left); }
-            if (round(right) > right) { right = round(right); }
-            if (round(bottom) < bottom) { bottom = round(bottom); }
-            if (round(top) > top) { top = round(top); }
+            // Add a tiny fudge amount to account for numerical precision loss
+            int rleft = agg::iround(left - 1e-8);
+            int rright = agg::iround(right + 1e-8);
+            int rbottom = agg::iround(bottom - 1e-8);
+            int rtop = agg::iround(top + 1e-8);
+            if (rleft < left) { left = rleft; }
+            if (rright > right) { right = rright; }
+            if (rbottom < bottom) { bottom = rbottom; }
+            if (rtop > top) { top = rtop; }
             path.move_to(left, bottom);
             path.line_to(right, bottom);
             path.line_to(right, top);
@@ -802,50 +806,42 @@ void resample(
 
     if (params.interpolation == NEAREST) {
         if (params.is_affine) {
-            using span_gen_t = typename type_mapping_t::template span_gen_nn_type<image_accessor_clip_t, nn_affine_interpolator_t>;
-            using span_conv_t = agg::span_converter<span_gen_t, span_conv_alpha_t>;
-            using nn_renderer_t = agg::renderer_scanline_aa<renderer_t, span_alloc_t, span_conv_t>;
-            nn_affine_interpolator_t interpolator(inverted);
-            span_gen_t span_gen(input_accessor_clip, interpolator);
-            span_conv_t span_conv(span_gen, conv_alpha);
-            nn_renderer_t nn_renderer(renderer, span_alloc, span_conv);
-            agg::render_scanlines(rasterizer, scanline, nn_renderer);
+            auto interpolator = accurate_interpolator_affine_nn{inverted};
+            // C++17 cannot deduce arguments for an alias class template, so define the class explicitly
+            using span_gen_t = typename type_mapping_t::
+                template span_gen_nn_type<decltype(image_accessor_clip), decltype(interpolator)>;
+            auto span_gen = span_gen_t{image_accessor_clip, interpolator};
+            render_image(renderer, rasterizer, span_gen, params.alpha);
         } else {
-            using span_gen_t = typename type_mapping_t::template span_gen_nn_type<image_accessor_clip_t, arbitrary_interpolator_t>;
-            using span_conv_t = agg::span_converter<span_gen_t, span_conv_alpha_t>;
-            using nn_renderer_t = agg::renderer_scanline_aa<renderer_t, span_alloc_t, span_conv_t>;
             lookup_distortion dist(
                 params.transform_mesh, in_width, in_height, out_width, out_height, true);
-            arbitrary_interpolator_t interpolator(inverted, dist);
-            span_gen_t span_gen(input_accessor_clip, interpolator);
-            span_conv_t span_conv(span_gen, conv_alpha);
-            nn_renderer_t nn_renderer(renderer, span_alloc, span_conv);
-            agg::render_scanlines(rasterizer, scanline, nn_renderer);
+            auto interpolator = arbitrary_interpolator_t{inverted, dist};
+            // C++17 cannot deduce arguments for an alias class template, so define the class explicitly
+            using span_gen_t = typename type_mapping_t::
+                template span_gen_nn_type<decltype(image_accessor_clip), decltype(interpolator)>;
+            auto span_gen = span_gen_t{image_accessor_clip, interpolator};
+            render_image(renderer, rasterizer, span_gen, params.alpha);
         }
     } else {
         agg::image_filter_lut filter;
         get_filter(params, filter);
 
         if (params.is_affine && params.resample) {
-            using span_gen_t = typename type_mapping_t::template span_gen_affine_type<image_accessor_wrap_t>;
-            using span_conv_t = agg::span_converter<span_gen_t, span_conv_alpha_t>;
-            using int_renderer_t = agg::renderer_scanline_aa<renderer_t, span_alloc_t, span_conv_t>;
-            affine_interpolator_t interpolator(inverted);
-            span_gen_t span_gen(input_accessor_wrap, interpolator, filter);
-            span_conv_t span_conv(span_gen, conv_alpha);
-            int_renderer_t int_renderer(renderer, span_alloc, span_conv);
-            agg::render_scanlines(rasterizer, scanline, int_renderer);
+            auto interpolator = agg::span_interpolator_linear{inverted};
+            // C++17 cannot deduce arguments for an alias class template, so define the class explicitly
+            using span_gen_t = typename type_mapping_t::
+                template span_gen_affine_type<decltype(image_accessor_wrap)>;
+            auto span_gen = span_gen_t{image_accessor_wrap, interpolator, filter};
+            render_image(renderer, rasterizer, span_gen, params.alpha);
         } else {
-            using span_gen_t = typename type_mapping_t::template span_gen_filter_type<image_accessor_wrap_t, arbitrary_interpolator_t>;
-            using span_conv_t = agg::span_converter<span_gen_t, span_conv_alpha_t>;
-            using int_renderer_t = agg::renderer_scanline_aa<renderer_t, span_alloc_t, span_conv_t>;
             lookup_distortion dist(
                 params.transform_mesh, in_width, in_height, out_width, out_height, false);
-            arbitrary_interpolator_t interpolator(inverted, dist);
-            span_gen_t span_gen(input_accessor_wrap, interpolator, filter);
-            span_conv_t span_conv(span_gen, conv_alpha);
-            int_renderer_t int_renderer(renderer, span_alloc, span_conv);
-            agg::render_scanlines(rasterizer, scanline, int_renderer);
+            auto interpolator = arbitrary_interpolator_t{inverted, dist};
+            // C++17 cannot deduce arguments for an alias class template, so define the class explicitly
+            using span_gen_t = typename type_mapping_t::
+                template span_gen_filter_type<decltype(image_accessor_wrap), decltype(interpolator)>;
+            auto span_gen = span_gen_t{image_accessor_wrap, interpolator, filter};
+            render_image(renderer, rasterizer, span_gen, params.alpha);
         }
     }
 }

@@ -1,5 +1,8 @@
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
+#ifdef PYBIND11_HAS_SUBINTERPRETER_SUPPORT
+#include <pybind11/subinterpreter.h>
+#endif
 
 #include <array>
 #include <limits>
@@ -281,7 +284,7 @@ Py_is_sorted_and_has_non_nan(py::object obj)
     bool result;
 
     py::array array = py::array::ensure(obj);
-    if (array.ndim() != 1) {
+    if (!array || array.ndim() != 1) {
         throw std::invalid_argument("array must be 1D");
     }
 
@@ -297,13 +300,21 @@ Py_is_sorted_and_has_non_nan(py::object obj)
         result = is_sorted_and_has_non_nan<double>(array);
     } else {
         array = py::array_t<double>::ensure(obj);
+        if (!array) {
+            throw std::invalid_argument("Could not coerce array to double");
+        }
         result = is_sorted_and_has_non_nan<double>(array);
     }
 
     return result;
 }
 
+#ifdef PYBIND11_HAS_SUBINTERPRETER_SUPPORT
+PYBIND11_MODULE(_path, m,
+                py::mod_gil_not_used(), py::multiple_interpreters::per_interpreter_gil())
+#else
 PYBIND11_MODULE(_path, m, py::mod_gil_not_used())
+#endif
 {
     m.def("point_in_path", &Py_point_in_path,
           "x"_a, "y"_a, "radius"_a, "path"_a, "trans"_a);

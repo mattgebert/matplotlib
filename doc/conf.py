@@ -110,6 +110,10 @@ warnings.filterwarnings('default', category=UserWarning,
 warnings.filterwarnings('default', category=UserWarning,
                         message=r'Matplotlib currently does not support .+ natively\.')
 
+# Avoid warnings on import of the `colour` package for its optional dependencies.
+warnings.filterwarnings('ignore',
+                        message=r'".*" related API features are not available: ')
+
 # Add any Sphinx extension module names here, as strings. They can be
 # extensions coming with Sphinx (named 'sphinx.ext.*') or your custom ones.
 extensions = [
@@ -134,7 +138,6 @@ extensions = [
     'sphinxext.mock_gui_toolkits',
     'sphinxext.rcparams',
     'sphinxext.redirect_from',
-    'sphinxext.skip_deprecated',
     'sphinx_copybutton',
     'sphinx_design',
     'sphinx_tags',
@@ -154,7 +157,7 @@ def _check_dependencies():
         **{ext: ext.split(".")[0] for ext in extensions},
         # Explicitly list deps that are not extensions, or whose PyPI package
         # name does not match the (toplevel) module name.
-        "colorspacious": 'colorspacious',
+        "colour": 'colour-science',
         "mpl_sphinx_theme": 'mpl_sphinx_theme',
         "sphinxcontrib.inkscapeconverter": 'sphinxcontrib-svg2pdfconverter',
     }
@@ -274,8 +277,9 @@ intersphinx_mapping = {
     'pandas': ('https://pandas.pydata.org/docs/', None),
     'pytest': ('https://pytest.org/en/stable/', None),
     'python': ('https://docs.python.org/3/', None),
-    'scipy': ('https://docs.scipy.org/doc/scipy/', None),
+    'scipy': ('https://docs.scipy.org/doc/scipy/', 'https://static.scipy.org/doc/scipy/objects.inv'),
     'tornado': ('https://www.tornadoweb.org/en/stable/', None),
+    'wx': ('https://docs.wxpython.org/', None),
     'xarray': ('https://docs.xarray.dev/en/stable/', None),
     'meson-python': ('https://mesonbuild.com/meson-python/', None),
     'pip': ('https://pip.pypa.io/en/stable/', None),
@@ -293,6 +297,7 @@ for gd in gallery_dirs:
 
 sphinx_gallery_conf = {
     'backreferences_dir': Path('api', '_as_gen'),
+    'minigallery_sort_order': 'sphinxext.gallery_order.preserve_order',
     # Compression is a significant effort that we skip for local and CI builds.
     'compress_images': ('thumbnails', 'images') if is_release_build else (),
     'doc_module': ('matplotlib', 'mpl_toolkits'),
@@ -836,58 +841,6 @@ else:
     extensions.append('sphinx.ext.viewcode')
 
 
-def generate_ScalarMappable_docs():
-
-    import matplotlib.colorizer
-    from numpydoc.docscrape_sphinx import get_doc_object
-    from pathlib import Path
-    import textwrap
-    from sphinx.util.inspect import stringify_signature
-    target_file = Path(__file__).parent / 'api' / 'scalarmappable.gen_rst'
-    with open(target_file, 'w') as fout:
-        fout.write("""
-.. class:: ScalarMappable(colorizer, **kwargs)
-   :canonical: matplotlib.colorizer._ScalarMappable
-
-""")
-        for meth in [
-                matplotlib.colorizer._ScalarMappable.autoscale,
-                matplotlib.colorizer._ScalarMappable.autoscale_None,
-                matplotlib.colorizer._ScalarMappable.changed,
-                """
-   .. attribute:: colorbar
-
-        The last colorbar associated with this ScalarMappable. May be None.
-""",
-                matplotlib.colorizer._ScalarMappable.get_alpha,
-                matplotlib.colorizer._ScalarMappable.get_array,
-                matplotlib.colorizer._ScalarMappable.get_clim,
-                matplotlib.colorizer._ScalarMappable.get_cmap,
-                """
-   .. property:: norm
-""",
-                matplotlib.colorizer._ScalarMappable.set_array,
-                matplotlib.colorizer._ScalarMappable.set_clim,
-                matplotlib.colorizer._ScalarMappable.set_cmap,
-                matplotlib.colorizer._ScalarMappable.set_norm,
-                matplotlib.colorizer._ScalarMappable.to_rgba,
-        ]:
-            if isinstance(meth, str):
-                fout.write(meth)
-            else:
-                name = meth.__name__
-                sig = stringify_signature(inspect.signature(meth))
-                docstring = textwrap.indent(
-                    str(get_doc_object(meth)),
-                    '      '
-                ).rstrip()
-                fout.write(f"""
-   .. method::  {name}{sig}
-{docstring}
-
-""")
-
-
 # -----------------------------------------------------------------------------
 # Sphinx setup
 # -----------------------------------------------------------------------------
@@ -901,5 +854,4 @@ def setup(app):
     app.connect('autodoc-process-bases', autodoc_process_bases)
     if sphinx.version_info[:2] < (7, 1):
         app.connect('html-page-context', add_html_cache_busting, priority=1000)
-    generate_ScalarMappable_docs()
     app.config.autodoc_use_legacy_class_based = True

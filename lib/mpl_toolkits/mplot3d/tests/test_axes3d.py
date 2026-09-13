@@ -3,7 +3,6 @@ import itertools
 import platform
 import sys
 
-from packaging.version import parse as parse_version
 import pytest
 
 from mpl_toolkits.mplot3d import Axes3D, axes3d, proj3d, art3d
@@ -73,6 +72,72 @@ def test_axis_positions():
         ax.set(xlabel='x', ylabel='y', zlabel='z', title=title)
 
 
+@mpl3d_image_comparison(['axis_positions_inverted.png'], remove_text=False,
+                        style='mpl20')
+def test_axis_positions_inverted():
+    # Regression test for https://github.com/matplotlib/matplotlib/issues/31989
+    # Check the visual placement of axes, ticks and labels for
+    # every combination of inverted x, y and z axes.
+    combinations = list(itertools.product([False, True], repeat=3))
+    fig, axs = plt.subplots(2, 4, figsize=(10, 6),
+                            subplot_kw={'projection': '3d'})
+    for ax, (invert_x, invert_y, invert_z) in zip(axs.flatten(), combinations):
+        # Plot an asymmetric line so that inverting an axis visibly mirrors the data,
+        # ensuring the projection is exercised for every inversion combination
+        ax.plot([0, 1, 1], [0, 0, 1], [0, 1, 1])
+        if invert_x:
+            ax.invert_xaxis()
+        if invert_y:
+            ax.invert_yaxis()
+        if invert_z:
+            ax.invert_zaxis()
+        title = (f'{"-" if invert_x else ""}x, '
+                 f'{"-" if invert_y else ""}y, '
+                 f'{"-" if invert_z else ""}z')
+        ax.set(xlabel='x', ylabel='y', zlabel='z', title=title)
+
+
+def test_set_aspect_datalim_restores_limits():
+
+    fig = plt.figure()
+    ax = fig.add_subplot(projection='3d')
+
+    ax.plot([0, 1], [0, 2], [0, 3])
+
+    fig.canvas.draw()
+    default_limits = ax.get_w_lims()
+
+    ax.set_aspect('equal', adjustable='datalim')
+    fig.canvas.draw()
+    equal_limits = ax.get_w_lims()
+
+    ax.set_aspect('auto', adjustable='datalim')
+    fig.canvas.draw()
+    final_limits = ax.get_w_lims()
+
+    # equal should change limits
+    assert not np.allclose(default_limits, equal_limits)
+
+    # auto should restore original limits
+    assert np.allclose(default_limits, final_limits)
+
+
+def test_set_aspect_datalim_restores_untouched_axes():
+    fig = plt.figure()
+    ax = fig.add_subplot(projection='3d')
+    ax.plot([1, 2], [3, 4], [5, 6])
+    orig_lims = ax.get_w_lims()
+
+    ax.set_aspect('equal', adjustable='datalim')
+    ax.set_xlim(-50, 50)  # explicit user change mid-'equal'
+    ax.set_aspect('auto', adjustable='datalim')
+
+    xlim, ylim, zlim = ax.get_xlim3d(), ax.get_ylim3d(), ax.get_zlim3d()
+    assert xlim == (-50, 50)               # explicit value preserved
+    assert ylim == orig_lims[2:4]          # untouched axis restored
+    assert zlim == orig_lims[4:6]          # untouched axis restored
+
+
 @mpl3d_image_comparison(['aspects.png'], remove_text=False, style='mpl20')
 def test_aspects():
     aspects = ('auto', 'equal', 'equalxy', 'equalyz', 'equalxz', 'equal')
@@ -117,7 +182,7 @@ def test_axes3d_repr():
 
 
 @mpl3d_image_comparison(['axes3d_primary_views.png'], style='mpl20',
-                        tol=0.05 if sys.platform == "darwin" else 0)
+                        tol=0.045 if sys.platform == 'darwin' else 0)
 def test_axes3d_primary_views():
     # (elev, azim, roll)
     views = [(90, -90, 0),  # XY
@@ -128,14 +193,13 @@ def test_axes3d_primary_views():
              (0, 180, 0)]   # -YZ
     # When viewing primary planes, draw the two visible axes so they intersect
     # at their low values
-    fig, axs = plt.subplots(2, 3, subplot_kw={'projection': '3d'})
+    fig, axs = plt.subplots(2, 3, subplot_kw={'projection': '3d'}, layout='tight')
     for i, ax in enumerate(axs.flat):
         ax.set_xlabel('x')
         ax.set_ylabel('y')
         ax.set_zlabel('z')
         ax.set_proj_type('ortho')
         ax.view_init(elev=views[i][0], azim=views[i][1], roll=views[i][2])
-    plt.tight_layout()
 
 
 @mpl3d_image_comparison(['bar3d.png'], style='mpl20')
@@ -182,8 +246,7 @@ def test_bar3d_shaded():
     fig.canvas.draw()
 
 
-@mpl3d_image_comparison(['bar3d_notshaded.png'], style='mpl20',
-                        tol=0.01 if parse_version(np.version.version).major < 2 else 0)
+@mpl3d_image_comparison(['bar3d_notshaded.png'], style='mpl20')
 def test_bar3d_notshaded():
     fig = plt.figure()
     ax = fig.add_subplot(projection='3d')
@@ -441,6 +504,19 @@ def test_scatter3d_linewidth():
 
 
 @check_figures_equal()
+def test_scatter3d_cmap_alpha(fig_ref, fig_test):
+    # Check that alpha is applied correctly with colormapped scatter.
+    # Regression test for https://github.com/matplotlib/matplotlib/issues/25468
+    x, y, z = np.arange(5), np.zeros(5), np.arange(5)
+    c = np.array([0, 1, np.nan, 3, 4])
+
+    ax_test = fig_test.add_subplot(projection='3d')
+    ax_test.scatter(x, y, z, c=c)
+    ax_ref = fig_ref.add_subplot(projection='3d')
+    ax_ref.scatter(x, y, z, c=c, alpha=1)
+
+
+@check_figures_equal()
 def test_scatter3d_linewidth_modification(fig_ref, fig_test):
     # Changing Path3DCollection linewidths with array-like post-creation
     # should work correctly.
@@ -647,10 +723,8 @@ def test_surface3d():
     fig.colorbar(surf, shrink=0.5, aspect=5)
 
 
-# TODO: tighten tolerance after baseline image is regenerated for text overhaul
-@image_comparison(['surface3d_label_offset_tick_position.png'], style='mpl20', tol=0.07)
+@image_comparison(['surface3d_label_offset_tick_position.png'], style='mpl20')
 def test_surface3d_label_offset_tick_position():
-    plt.rcParams['axes3d.automargin'] = True  # Remove when image is regenerated
     ax = plt.figure().add_subplot(projection="3d")
 
     x, y = np.mgrid[0:6 * np.pi:0.25, 0:4 * np.pi:0.25]
@@ -744,8 +818,7 @@ def test_surface3d_masked_strides():
     ax.view_init(60, -45, 0)
 
 
-# TODO: tighten tolerance after baseline image is regenerated for text overhaul
-@mpl3d_image_comparison(['text3d.png'], remove_text=False, style='mpl20', tol=0.1)
+@mpl3d_image_comparison(['text3d.png'], remove_text=False, style='mpl20')
 def test_text3d():
     fig = plt.figure()
     ax = fig.add_subplot(projection='3d')
@@ -844,6 +917,7 @@ def test_wireframe3dasymmetric():
     fig = plt.figure()
     ax = fig.add_subplot(projection='3d')
     X, Y, Z = axes3d.get_test_data(0.05)
+    X, Y, Z = X[:-1], Y[:-1], Z[:-1]  # Drop a row so the grid is non-square
     ax.plot_wireframe(X, Y, Z, rcount=3, ccount=13)
 
 
@@ -1124,9 +1198,7 @@ def test_poly3dCollection_autoscaling():
     assert np.allclose(ax.get_zlim3d(), (-0.0833333333333333, 4.083333333333333))
 
 
-# TODO: tighten tolerance after baseline image is regenerated for text overhaul
-@mpl3d_image_comparison(['axes3d_labelpad.png'],
-                        remove_text=False, style='mpl20', tol=0.06)
+@mpl3d_image_comparison(['axes3d_labelpad.png'], remove_text=False, style='mpl20')
 def test_axes3d_labelpad():
     fig = plt.figure()
     ax = fig.add_axes(Axes3D(fig))
@@ -1501,8 +1573,8 @@ class TestVoxels:
             assert voxels[coord], "faces returned for absent voxel"
             assert isinstance(poly, art3d.Poly3DCollection)
 
-    @mpl3d_image_comparison(['voxels-xyz.png'],
-                            tol=0.01, remove_text=False, style='mpl20')
+    @mpl3d_image_comparison(['voxels-xyz.png'], remove_text=False, style='mpl20',
+                            tol=0.002 if sys.platform == 'win32' else 0)
     def test_xyz(self):
         fig, ax = plt.subplots(subplot_kw={"projection": "3d"})
 
@@ -1715,7 +1787,7 @@ def test_errorbar3d_errorevery():
 
 
 @mpl3d_image_comparison(['errorbar3d.png'], style='mpl20',
-                        tol=0 if platform.machine() == 'x86_64' else 0.02)
+                        tol=0 if platform.machine() == 'x86_64' else 0.015)
 def test_errorbar3d():
     """Tests limits, color styling, and legend for 3D errorbars."""
     fig = plt.figure()
@@ -1731,9 +1803,9 @@ def test_errorbar3d():
     ax.legend()
 
 
-@image_comparison(['stem3d.png'], style='mpl20', tol=0.009)
+@image_comparison(['stem3d.png'], style='mpl20',
+                  tol=0 if platform.machine() == 'x86_64' else 0.008)
 def test_stem3d():
-    plt.rcParams['axes3d.automargin'] = True  # Remove when image is regenerated
     fig, axs = plt.subplots(2, 3, figsize=(8, 6),
                             constrained_layout=True,
                             subplot_kw={'projection': '3d'})
@@ -2785,6 +2857,47 @@ def test_axis_get_tightbbox_includes_offset_text():
             f"bbox.y1 ({bbox.y1}) should be >= offset_bbox.y1 ({offset_bbox.y1})"
 
 
+@pytest.mark.parametrize('labeltype', ['ticks', 'axis label'])
+def test_axes3d_tightbbox_includes_labels(labeltype):
+    fig = plt.figure()
+    ax = fig.add_subplot(projection='3d')
+
+    renderer = fig._get_renderer()
+
+    tight_bbs = {}
+
+    if labeltype == 'axis label':
+        ax.set_zlabel('foo')
+
+        # Remove ticks so they don't affect the result
+        ax.zaxis.set_ticks_position('none')
+
+    for pos in ['lower', 'upper', 'both', 'none']:
+        if labeltype == 'ticks':
+            ax.zaxis.set_ticks_position(pos)
+        else:
+            ax.zaxis.set_label_position(pos)
+        tight_bbs[pos] = ax.get_tightbbox(renderer)
+
+    for pos in ['lower', 'both']:
+        # Should make space for labels on the left
+        assert tight_bbs[pos].xmin < tight_bbs['none'].xmin, \
+            f'No space for labels on left with {labeltype} position "{pos}"'
+
+    for pos in ['upper', 'both']:
+        # Should make space for labels on the right
+        assert tight_bbs[pos].xmax > tight_bbs['none'].xmax, \
+            f'No space for labels on right with {labeltype} position "{pos}"'
+
+    # No space on the right for 'lower'
+    assert tight_bbs['lower'].xmax == tight_bbs['none'].xmax, \
+        f'Unexpected space for labels on right with {labeltype} position "lower"'
+
+    # No space on the left for 'upper'
+    assert tight_bbs['upper'].xmin == tight_bbs['none'].xmin, \
+        f'Unexpected space for labels on left with {labeltype} position "{pos}"'
+
+
 def test_ctrl_rotation_snaps_to_5deg():
     fig = plt.figure()
     ax = fig.add_subplot(projection='3d')
@@ -2878,7 +2991,7 @@ def _make_triangulation_data():
 
 
 @mpl3d_image_comparison(['scale3d_artists_log.png'], style='mpl20',
-                        remove_text=False, tol=0.03)
+                        remove_text=False, tol=0.016)
 def test_scale3d_artists_log():
     """Test all 3D artist types with log scale."""
     fig = plt.figure(figsize=(16, 12))
@@ -3169,15 +3282,6 @@ def test_scale3d_autoscale_with_log():
         assert lim[1] > 0, f"{name} upper limit should be positive"
 
 
-@pytest.mark.parametrize("method", ["semilogx", "semilogy", "semilogz", "loglog"])
-def test_semilog_loglog_not_implemented(method):
-    """semilogx/y/z and loglog should raise NotImplementedError on Axes3D."""
-    fig = plt.figure()
-    ax = fig.add_subplot(projection='3d')
-    with pytest.raises(NotImplementedError, match="Axes3D does not support"):
-        getattr(ax, method)([1, 10, 100], [1, 2, 3])
-
-
 def test_scale3d_calc_coord():
     """_calc_coord should return data coordinates with correct pane values."""
     fig = plt.figure()
@@ -3190,3 +3294,17 @@ def test_scale3d_calc_coord():
     # Pane coordinate should match axis limit (y-pane at max)
     assert pane_idx == 1
     assert point[pane_idx] == pytest.approx(ax.get_ylim()[1])
+
+
+def test_plot_surface_log_scale_invalid_values():
+    """Ensure non-positive Z values on a log z-axis does not corrupt zlim."""
+    fig = plt.figure()
+    ax = fig.add_subplot(projection='3d')
+    ax.set_zscale('log')
+    X, Y = np.meshgrid(np.linspace(1, 3, 4), np.linspace(1, 3, 4))
+    Z = X * Y - 4  # half the entries are <= 0, invalid for a log scale
+    ax.plot_surface(X, Y, Z)
+    fig.canvas.draw()
+
+    zmin, zmax = ax.get_zlim()
+    assert 1e-3 < zmin < zmax < 1e3, f"zlim corrupted: {(zmin, zmax)}"

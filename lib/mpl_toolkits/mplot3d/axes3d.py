@@ -31,7 +31,6 @@ via ``do_3d_projection()``, then project to 2D for rendering.
 """
 
 from collections import defaultdict
-from functools import partialmethod
 import itertools
 import math
 import textwrap
@@ -71,6 +70,11 @@ class Axes3D(Axes):
         As a user, you do not instantiate Axes directly, but use Axes creation
         methods instead; e.g. from `.pyplot` or `.Figure`:
         `~.pyplot.subplots`, `~.pyplot.subplot_mosaic` or `.Figure.add_axes`.
+
+    .. note::
+
+        Some of the inherited behavior of Axes is not applicable to 3d and will raise
+        an `.UnsupportedError`.
     """
     name = '3d'
 
@@ -335,9 +339,28 @@ class Axes3D(Axes):
                            aspect=aspect)
 
         self.set_adjustable(adjustable)
+
+        if self._aspect == 'auto' and aspect != 'auto':
+            self._auto_aspect_restore_limits = list(self.get_w_lims())
+
         self._aspect = aspect
 
-        if aspect in ('equal', 'equalxy', 'equalxz', 'equalyz'):
+        if aspect == "auto":
+            if self._adjustable == "box":
+                self.set_box_aspect(None)
+
+            elif self._adjustable == "datalim":
+                if hasattr(self, "_auto_aspect_restore_limits"):
+                    limits = self._auto_aspect_restore_limits
+
+                    if limits[0] is not None:
+                        self.set_xlim3d(limits[0], limits[1], auto=True)
+                    if limits[2] is not None:
+                        self.set_ylim3d(limits[2], limits[3], auto=True)
+                    if limits[4] is not None:
+                        self.set_zlim3d(limits[4], limits[5], auto=True)
+                    del self._auto_aspect_restore_limits
+        else:
             ax_indices = self._equal_aspect_axis_indices(aspect)
 
             view_intervals = np.array([self.xaxis.get_view_interval(),
@@ -466,7 +489,7 @@ class Axes3D(Axes):
         locator = self.get_axes_locator()
         self.apply_aspect(locator(self, renderer) if locator else None)
 
-        # add the projection matrix to the renderer
+        # add the projection matrix to the axes
         self.M = self.get_proj()
         self.invM = np.linalg.inv(self.M)
 
@@ -636,6 +659,8 @@ class Axes3D(Axes):
     def auto_scale_xyz(self, X, Y, Z=None, had_data=None):
         # This updates the bounding boxes as to keep a record as to what the
         # minimum sized rectangular volume holds the data.
+        X = self.xaxis._nan_out_of_scale_range(X)
+        Y = self.yaxis._nan_out_of_scale_range(Y)
         if np.shape(X) == np.shape(Y):
             self.xy_dataLim.update_from_data_xy(
                 np.column_stack([np.ravel(X), np.ravel(Y)]), not had_data)
@@ -643,6 +668,7 @@ class Axes3D(Axes):
             self.xy_dataLim.update_from_data_x(X, not had_data)
             self.xy_dataLim.update_from_data_y(Y, not had_data)
         if Z is not None:
+            Z = self.zaxis._nan_out_of_scale_range(Z)
             self.zz_dataLim.update_from_data_x(Z, not had_data)
         # Let autoscale_view figure out how to use this data.
         self.autoscale_view()
@@ -864,6 +890,11 @@ class Axes3D(Axes):
             delta = (upper - lower) * view_margin
             lower -= delta
             upper += delta
+
+        if not auto and hasattr(self, '_auto_aspect_restore_limits'):
+            idx = {self.xaxis: 0, self.yaxis: 2, self.zaxis: 4}[axis]
+            self._auto_aspect_restore_limits[idx] = None
+            self._auto_aspect_restore_limits[idx + 1] = None
         return axis._set_lim(lower, upper, emit=emit, auto=auto)
 
     def set_xlim(self, left=None, right=None, *, emit=True, auto=False,
@@ -1197,16 +1228,16 @@ class Axes3D(Axes):
         """
         self._set_axis_scale(self.zaxis, value, **kwargs)
 
-    def _raise_semilog_not_implemented(self, name, *args, **kwargs):
-        raise NotImplementedError(
-            f"Axes3D does not support {name}. Use ax.set_xscale/set_yscale/set_zscale "
-            "and ax.plot(...) instead."
-        )
+    twinx = _api.unsupported_method()
+    twiny = _api.unsupported_method()
+    secondary_xaxis = _api.unsupported_method()
+    secondary_yaxis = _api.unsupported_method()
 
-    semilogx = partialmethod(_raise_semilog_not_implemented, "semilogx")
-    semilogy = partialmethod(_raise_semilog_not_implemented, "semilogy")
-    semilogz = partialmethod(_raise_semilog_not_implemented, "semilogz")
-    loglog = partialmethod(_raise_semilog_not_implemented, "loglog")
+    _msg = "Use ax.set_xscale/set_yscale/set_zscale and ax.plot(...) instead."
+    semilogx = _api.unsupported_method(append_message=_msg)
+    semilogy = _api.unsupported_method(append_message=_msg)
+    semilogz = _api.unsupported_method(append_message=_msg)
+    loglog = _api.unsupported_method(append_message=_msg)
 
     get_zticks = _axis_method_wrapper("zaxis", "get_ticklocs")
     set_zticks = _axis_method_wrapper("zaxis", "set_ticks")
@@ -4160,8 +4191,10 @@ class Axes3D(Axes):
         if self._axis3don:
             for axis in self._axis_map.values():
                 if axis.get_visible():
-                    axis_bb = martist._get_tightbbox_for_layout_only(
-                        axis, renderer)
+                    if for_layout_only:
+                        axis_bb = martist._get_tightbbox_for_layout_only(axis, renderer)
+                    else:
+                        axis_bb = axis.get_tightbbox(renderer=renderer)
                     if axis_bb:
                         batch.append(axis_bb)
         return mtransforms.Bbox.union(batch)

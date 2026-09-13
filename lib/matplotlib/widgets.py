@@ -1719,7 +1719,6 @@ class TextBox(AxesWidget):
         self.cursor_index = self.text_disp._char_index_at(event.x)
         self._rendercursor()
 
-    @_call_with_reparented_event
     def _resize(self, event):
         self.stop_typing()
 
@@ -2086,6 +2085,16 @@ class Cursor(AxesWidget):
         self.useblit = useblit and self.canvas.supports_blit  # TODO: make dynamic
 
         if self.useblit:
+            for ax_ in ax.get_figure(root=True).get_axes():
+                if ax_ is not ax and ax.bbox.overlaps(ax_.bbox):
+                    _api.warn_external(
+                        "Cursor blitting is currently not supported on "
+                        "overlapping axes; falling back to useblit=False."
+                    )
+                    self.useblit = False
+                    break
+
+        if self.useblit:
             lineprops['animated'] = True
         self.lineh = ax.axhline(ax.get_ybound()[0], visible=False, **lineprops)
         self.linev = ax.axvline(ax.get_xbound()[0], visible=False, **lineprops)
@@ -2110,7 +2119,12 @@ class Cursor(AxesWidget):
             self.linev.set_visible(False)
             self.lineh.set_visible(False)
             if self.needclear:
-                self.canvas.draw()
+                background = self._load_blit_background()
+                if self.useblit and background is not None:
+                    self.canvas.restore_region(background)
+                    self.canvas.blit(self.ax.bbox)
+                else:
+                    self.canvas.draw()
                 self.needclear = False
             return
         self.needclear = True
@@ -2210,10 +2224,9 @@ class MultiCursor(Widget):
         ymid = 0.5 * (ymin + ymax)
 
         self.visible = True
-        self.useblit = (
+        self.useblit = (  # TODO: make dynamic
             useblit
             and all(canvas.supports_blit for canvas in self._canvas_infos))
-            # TODO: make dynamic
 
         if self.useblit:
             lineprops['animated'] = True
@@ -4923,7 +4936,6 @@ class RectangleSelector(_SelectorWidget):
 
         return _RectangleSelectorAction.CREATE
 
-
     def _onmove(self, event):
         """
         Motion notify event handler.
@@ -5462,7 +5474,7 @@ class PolygonSelector(_SelectorWidget):
 
         if box_handle_props is None:
             box_handle_props = {}
-        self._box_handle_props = self._handle_props.update(box_handle_props)
+        self._box_handle_props = {**self._handle_props, **box_handle_props}
         self._box_props = box_props
 
     def _get_bbox(self):
@@ -5714,7 +5726,16 @@ class PolygonSelector(_SelectorWidget):
 
     def _clear_without_update(self):
         self._selection_completed = False
-        self._xys = [(0, 0)]
+        prev = self._prev_event
+        if (prev is not None
+                and prev.xdata is not None and prev.ydata is not None
+                and not np.isnan(prev.xdata) and not np.isnan(prev.ydata)):
+            # Reset the pending vertex to the last known cursor position.
+            self._xys = [(prev.xdata, prev.ydata)]
+        else:
+            x0, x1 = self.ax.get_xlim()
+            y0, y1 = self.ax.get_ylim()
+            self._xys = [((x0 + x1) / 2, (y0 + y1) / 2)]
         self._draw_polygon_without_update()
 
 

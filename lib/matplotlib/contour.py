@@ -143,7 +143,23 @@ class ContourLabeler:
         -------
         labels
             A list of `.Text` instances for the labels.
+
+            Note: The returned Text instances should not be individually
+            removed or have their geometry modified, e.g. by changing text or font size.
+            If you need such a modification, remove the entire
+            `.ContourSet` and recreate it.
         """
+
+        if self.filled:
+            _api.warn_deprecated(
+                "3.11",
+                message="clabel() is not designed to be used with filled contours and "
+                        "may result in inconsistent plots. Applying clabel() to filled "
+                        "contours is thus deprecated since %(since)s. If you need "
+                        "labels with filled contours, instead draw contour lines "
+                        "using contour() in addition to contourf() and add the labels "
+                        "to the contour lines."
+            )
 
         # Based on the input arguments, clabel() adds a list of "label
         # specific" attributes to the ContourSet object.  These attributes are
@@ -462,8 +478,8 @@ class ContourLabeler:
         label_width = self._get_nth_label_width(level)
         rotation, path = self._split_path_and_get_label_rotation(
             path, idx_vtx_min, proj, label_width, inline_spacing)
-        self.add_label(*proj, rotation, self.labelLevelList[idx_level_min],
-                       self.labelCValueList[idx_level_min])
+        self.add_label(*proj, rotation, self.labelLevelList[level],
+                       self.labelCValueList[level])
 
         if inline:
             self._paths[idx_level_min] = path
@@ -504,7 +520,14 @@ class ContourLabeler:
     def remove(self):
         super().remove()
         for text in self.labelTexts:
-            text.remove()
+            try:
+                text.remove()
+            except ValueError:
+                _api.warn_external(
+                    "Some labels were manually removed from the ContourSet. "
+                    "To remove labels cleanly, remove the entire ContourSet "
+                    "and recreate it.")
+        self.labelTexts.clear()
 
 
 def _find_closest_point_on_path(xys, p):
