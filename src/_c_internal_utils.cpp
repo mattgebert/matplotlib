@@ -29,8 +29,10 @@
 #define UNUSED_ON_NON_WINDOWS Py_UNUSED
 #endif
 #ifdef __APPLE__
+#include <dlfcn.h>
 #include <CoreFoundation/CoreFoundation.h>
 #include <CoreText/CoreText.h>
+#include <ApplicationServices/ApplicationServices.h>
 #endif
 
 namespace py = pybind11;
@@ -94,6 +96,16 @@ mpl_display_is_valid(void)
         }
     }
     return false;
+#elif defined(__APPLE__)
+    CFDictionaryRef session_info;
+
+    session_info = CGSessionCopyCurrentDictionary();
+    if (session_info == NULL) {
+        return false;
+    }
+
+    CFRelease(session_info);
+    return true;
 #else
     return true;
 #endif
@@ -104,6 +116,10 @@ mpl_get_available_fonts(void)
 {
 #if defined(__APPLE__)
     py::set fonts;
+
+    // Using CoreText before AppKit is loaded exposes a bug in NSFont<->CTFont
+    // toll-free bridging. Load AppKit now to avoid a future exception.
+    dlopen("/System/Library/Frameworks/AppKit.framework/AppKit", RTLD_NOW);
 
     auto cfStringToPyStr = [](CFStringRef str) -> py::str {
         auto cstr = CFStringGetCStringPtr(str, kCFStringEncodingUTF8);
@@ -257,6 +273,8 @@ PYBIND11_MODULE(_c_internal_utils, m, py::mod_gil_not_used())
         On Linux, returns True if either $DISPLAY is set and XOpenDisplay(NULL)
         succeeds, or $WAYLAND_DISPLAY is set and wl_display_connect(NULL)
         succeeds.
+
+        On macOS, returns True if CGSessionCopyCurrentDictionary is not NULL.
 
         On other platforms, always returns True.)""");
     m.def(

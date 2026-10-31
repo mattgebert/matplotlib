@@ -3,12 +3,12 @@ project(
   'c', 'cpp',
   version: run_command(
     # Also keep version in sync with pyproject.toml.
-    find_program('python3', 'python', version: '>= 3.11'),
+    find_program('python3', 'python', version: '>= 3.12'),
     '-m', 'setuptools_scm', check: true).stdout().strip(),
   # qt_editor backend is MIT
   # STIX, Computer Modern, and Last Resort are OFL
   # DejaVu is Bitstream Vera and Public Domain
-  license: 'PSF-2.0 AND MIT AND CC0-1.0 AND OFL-1.1 AND Bitstream-Vera AND Public-Domain',
+  license: 'PSF-2.0 AND MIT AND CC0-1.0 AND OFL-1.1 AND Bitstream-Vera AND LicenseRef-Public-Domain',
   license_files: [
     'LICENSE/LICENSE',
     'extern/agg24-svn/src/copying',
@@ -26,7 +26,7 @@ project(
     'LICENSE/LICENSE_STIX',
     'LICENSE/LICENSE_YORICK',
   ],
-  meson_version: '>=1.1.0',
+  meson_version: '>=1.6.0',
   default_options: [
     'b_lto=true',
     'cpp_std=c++17',

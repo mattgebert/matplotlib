@@ -215,6 +215,23 @@ def test_get_macos_fonts(tmpdir, monkeypatch):
     assert assorted_system_fonts.issubset(fonts_found)
 
 
+def _test_macos_can_use_appkit_after_using_coretext():
+    # Make sure that AppKit works after using _get_macos_fonts(). See #32376
+    _get_macos_fonts()
+    mpl.use("macosx")
+    plt.figure()
+    plt.show(block=False)
+
+
+@pytest.mark.skipif(sys.platform != 'darwin', reason='macOS only')
+def test_macos_can_use_appkit_after_using_coretext(tmpdir, monkeypatch):
+    subprocess_run_helper(
+        _test_macos_can_use_appkit_after_using_coretext,
+        timeout=10,
+        extra_env={"MPLBACKEND": "agg"}
+    )
+
+
 @pytest.mark.skipif(sys.platform != 'linux' or not has_fclist,
                     reason='only Linux with fontconfig installed')
 def test_user_fonts_linux(tmpdir, monkeypatch):
@@ -264,8 +281,8 @@ def test_addfont_as_path(monkeypatch):
 
 @pytest.mark.skipif(sys.platform != 'win32', reason='Windows only')
 def test_user_fonts_win32():
-    if not (os.environ.get('APPVEYOR') or os.environ.get('TF_BUILD')):
-        pytest.xfail("This test should only run on CI (appveyor or azure) "
+    if not os.environ.get('GITHUB_ACTIONS'):
+        pytest.xfail("This test should only run on GitHub Actions "
                      "as the developer's font directory should remain "
                      "unchanged.")
     pytest.xfail("We need to update the registry for this test to work")
