@@ -12,7 +12,7 @@ from .colors import Colormap
 import PIL.Image
 
 from collections.abc import Callable, Collection, Iterable, Sequence
-from typing import Any, Literal
+from typing import Any, Literal, TypeAlias
 from numpy.typing import ArrayLike
 from .typing import ColorType
 import numpy as np
@@ -304,11 +304,13 @@ class _SelectorWidget(AxesWidget):
     def get_visible(self) -> bool: ...
     def clear(self) -> None: ...
     @property
-    def artists(self) -> tuple[Artist]: ...
+    def artists(self) -> tuple[Artist, ...]: ...
     def set_props(self, **props) -> None: ...
     def set_handle_props(self, **handle_props) -> None: ...
     def add_state(self, state: str) -> None: ...
     def remove_state(self, state: str) -> None: ...
+
+_SpanCallback: TypeAlias = Callable[[float, float], Any]
 
 class SpanSelector(_SelectorWidget):
     snap_values: ArrayLike | None
@@ -401,12 +403,18 @@ class ToolHandles:
     def closest(self, x: float, y: float) -> tuple[int, float]: ...
 
 class SpanSelectorN(SpanSelector):
+    # N spans are selected, so these generalize the single-span SpanSelector API.
+    onselect: _SpanCallback | list[_SpanCallback]  # type: ignore[assignment]
+    onmove_callback: _SpanCallback | list[_SpanCallback] | None  # type: ignore[assignment]
+    _selection_artists: list[Rectangle]
+    _active_selection_idx: int | None
+    _edge_handles: ToolLineHandles | None
     def __init__(
         self,
         N: int,
         ax: Axes,
-        onselect: Callable[[float, float], Any] | list[Callable[[float, float], Any]],
-        direction: Literal["horizontal"] | Literal["vertical"],
+        onselect: _SpanCallback | list[_SpanCallback],
+        direction: Literal["horizontal", "vertical"],
         *,
         callback_at_selection_complete: bool = ...,
         minspan: float = ...,
@@ -420,18 +428,37 @@ class SpanSelectorN(SpanSelector):
         drag_from_anywhere: bool = ...,
         ignore_event_outside: bool = ...,
         snap_values: ArrayLike | None = ...,
-        onmove_callback: Callable[[float, float], Any] | list[Callable[[float, float], Any]] | None = ...,
-        colors: list[ColorType] | ColorType | Colormap | None = ...
+        onmove_callback: _SpanCallback | list[_SpanCallback] | None = ...,
+        colors: list[ColorType] | ColorType | Colormap | None = ...,
     ) -> None: ...
-
     @property
     def N(self) -> int: ...
-
-    def color_spans(
+    @N.setter
+    def N(self, N: int) -> None: ...
+    @property
+    def artists(self) -> tuple[Artist, ...]: ...
+    def set_props(self, index: int | None = ..., **props) -> None: ...
+    def set_handle_props(self, index: int | None = ..., **handle_props) -> None: ...
+    def set_visible(self, visible: bool, index: int | None = ...) -> None: ...
+    @property  # type: ignore[override]
+    def extents(self) -> list[tuple[float, float]]: ...
+    @extents.setter
+    def extents(self, extents: list[tuple[float, float]]) -> None: ...
+    def set_colors(
         self,
-        rect_colors: list[ColorType] | ColorType | Colormap = ...,
-        handle_colors: list[ColorType] | ColorType | Colormap = ...,
+        rect_colors: list[ColorType] | ColorType | Colormap,
+        handle_colors: list[ColorType] | ColorType | Colormap | None = ...,
+        update_defaults: bool = ...,
+        dim: float = ...,
     ) -> None: ...
+    @property
+    def colors_rect(self) -> list[ColorType] | ColorType: ...
+    @colors_rect.setter
+    def colors_rect(self, cols: list[ColorType] | str) -> None: ...
+    @property
+    def colors_handles(self) -> list[tuple[str, str]]: ...
+    @colors_handles.setter
+    def colors_handles(self, cols: list[tuple[str, str]] | tuple[str, str] | str) -> None: ...
 
 class RectangleSelector(_SelectorWidget):
     drag_from_anywhere: bool

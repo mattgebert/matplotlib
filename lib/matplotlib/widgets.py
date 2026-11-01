@@ -3428,7 +3428,7 @@ class SpanSelectorN(SpanSelector):
         callback_at_selection_complete=False,
         minspan=0,
         useblit=False,
-        props={"alpha": 0.5},
+        props=None,
         interactive=False,
         button=None,
         handle_props=None,
@@ -3438,8 +3438,12 @@ class SpanSelectorN(SpanSelector):
         ignore_event_outside=False,
         snap_values=None,
         onmove_callback=None,
-        colors=colormaps.get("tab10"),
+        colors=None,
     ) -> None:
+        if colors is None:
+            colors = colormaps.get("tab10")
+        # Copy, as the dict is modified in place by SpanSelector.__init__.
+        props = {"alpha": 0.5} if props is None else dict(props)
         # Define N
         self._N = N
         self._props = props  # rectangles
@@ -3480,14 +3484,6 @@ class SpanSelectorN(SpanSelector):
             snap_values=snap_values,
         )
 
-        # Temporary fix to remove default red color and alpha from props,
-        # which are applied in SpanSelector.__init__ and override the 'set'
-        # of colors set here.
-        if "facecolor" in self._props and self._props["facecolor"] == "red":
-            del self._props["facecolor"]
-        if "alpha" in self._props and self._props["alpha"] == 0.5:
-            del self._props["alpha"]
-        self._props.update(props)  # Re-apply user props.
         self.set_colors(colors, None)
 
     @property
@@ -3612,15 +3608,17 @@ class SpanSelectorN(SpanSelector):
 
         # Use N to define 2*N handles for selection in _edge_handles.
         dxy = (positions[1] - positions[0]) / (2 * self.N - 1)
-        nPositions = (positions[0] + dxy * i for i in range(2 * self.N))
+        nPositions = [positions[0] + dxy * i for i in range(2 * self.N)]
 
         # If existing handles, collect their positions to override
         handles = self._edge_handles
         if handles is not None:
             existing_positions = handles.positions
-            nPositions = list(nPositions)
             for i in range(min(len(existing_positions), len(nPositions))):
                 nPositions[i] = existing_positions[i]
+
+        if props is None:
+            props = self._handle_props
 
         # Set handles.
         self._edge_handles = ToolLineHandles(
@@ -3652,9 +3650,6 @@ class SpanSelectorN(SpanSelector):
         if (
             self.ax is ax
             and getattr(self, "_selection_artists", None) is not None
-            # Legacy checks from SpanSelector:
-            or _init
-            or self.canvas is not ax.get_figure(root=True).canvas
         ):
             # Updating axis
             art_len = len(self._selection_artists)
@@ -3722,12 +3717,9 @@ class SpanSelectorN(SpanSelector):
             self.disconnect_events()
             self.connect_default_events()
         else:
-            self.ax = ax
-            # assert isinstance(self.ax, Axes) # allow editor to recognise type.
             if self.canvas is not None:
                 self.disconnect_events()
-            if self.canvas is not ax.figure.canvas:  #Why is this necessary?
-                self.canvas = ax.figure.canvas
+            self.ax = ax
             self.connect_default_events()
 
             # Direction of variables.
@@ -3789,7 +3781,6 @@ class SpanSelectorN(SpanSelector):
         self._active_handle_vis: bool = True
         """True (False) if the active handle was (in-)visible at press time."""
 
-
         if self._edge_handles is not None:
             # Check if  hovering an existing visible handle.
             index, e_dist = self._edge_handles.closest(event.x, event.y)
@@ -3815,7 +3806,7 @@ class SpanSelectorN(SpanSelector):
             [artist.get_visible() for artist in self._selection_artists], bool
         )
         if (self._visible is False or np.any(~sel_artists_vis)) and not hover:
-            i = np.argmin(sel_artists_vis)
+            i = int(np.argmin(sel_artists_vis))
             ex = self.extents
             ex[i] = v, v
             self.extents = ex
@@ -3894,9 +3885,6 @@ class SpanSelectorN(SpanSelector):
         or within another selection artist, updating the active index.
         """
         i = self._active_selection_idx
-        # if i is None:
-            # return False
-        # else:
         if (i is not None
             and self._selection_artists[i].get_visible()
             and self._selection_artists[i].contains(event, radius=0)[0]):
@@ -4010,7 +3998,6 @@ class SpanSelectorN(SpanSelector):
                 else backend_tools.cursors.POINTER
             )
 
-
     # Overrides to handle multiple selections, by adding an index parameter.
     # Same as SpanSelector.set_visible for all artists if no index is provided.
     def set_visible(self, visible: bool, index: int | None = None) -> None:
@@ -4033,7 +4020,8 @@ class SpanSelectorN(SpanSelector):
                     f"Index {index} is out of bounds for selection artists of length "
                     + f"{len(self._selection_artists)}."
                 )
-            elif len(self._edge_handles.artists) <= index * 2 + 1:
+            if (self._edge_handles is not None
+                    and len(self._edge_handles.artists) <= index * 2 + 1):
                 raise IndexError(
                     f"Index {index} is out of bounds for edge handle artists of length "
                     + f"{len(self._edge_handles.artists)}."
@@ -4041,8 +4029,8 @@ class SpanSelectorN(SpanSelector):
 
             self._selection_artists[index].set_visible(visible)
             if self._edge_handles is not None and self._interactive:
-                self._edge_handles._artists[index * 2].set_visible(visible)
-                self._edge_handles._artists[index * 2 + 1].set_visible(visible)
+                self._edge_handles.artists[index * 2].set_visible(visible)
+                self._edge_handles.artists[index * 2 + 1].set_visible(visible)
             if visible is True:
                 self._visible = True
                 return
@@ -4358,6 +4346,18 @@ class SpanSelectorN(SpanSelector):
         handle_clist: list = []
         """The list of modified colors for the edge handles."""
 
+        def _as_list(c):
+            # Wrap a single color (including RGB(A) tuples/lists) into a list.
+            if (c is not None and not isinstance(c, colors.Colormap)
+                    and colors.is_color_like(c)):
+                return [c]
+            if isinstance(c, tuple):
+                return list(c)
+            return c
+
+        rect_colors = _as_list(rect_colors)
+        handle_colors = _as_list(handle_colors)
+
         ## Gather all colors for the rectangles:
         # Colormap
         if isinstance(rect_colors, colors.Colormap):
@@ -4473,7 +4473,7 @@ class SpanSelectorN(SpanSelector):
                     # (RGB/RGBA tuple, alpha)
                     elif (isinstance(color[0], (tuple, list))
                           and all(isinstance(c, (int, float)) for c in color[0])
-                          and (len(color[0])==3 or len(color[0])==4)):
+                          and (len(color[0]) == 3 or len(color[0]) == 4)):
                         # Override alpha if RGBA tuple
                         handle_clist.append(
                             (dim * color[0][0],
@@ -4585,10 +4585,10 @@ class SpanSelectorN(SpanSelector):
                     self._selection_artists[i].set_alpha(color[3])
                 self._selection_artists[i].set_facecolor(color[0:3])
         elif isinstance(cols, str):
+            if not colors.is_color_like(cols):
+                raise ValueError(f"color '{cols}' is not a valid color")
             for artist in self._selection_artists:
-                if len(color) > 3:
-                    artist.set_alpha(color[3])
-                artist.set_facecolor(color[0:3])
+                artist.set_facecolor(cols)
         else:
             raise ValueError(f"colors '{cols}' must be a list or a string")
         self._default_colors_rect = cols
@@ -4616,25 +4616,25 @@ class SpanSelectorN(SpanSelector):
         return colors
 
     @colors_handles.setter
-    def colors_handles(self, colors: list[tuple[str, str]] | tuple[str, str] | str):
-        if isinstance(colors, list):
-            for i, color in enumerate(colors):
+    def colors_handles(self, cols: list[tuple[str, str]] | tuple[str, str] | str):
+        if isinstance(cols, list):
+            for i, color in enumerate(cols):
                 self._edge_handles.artists[i * 2].set_color(color[0])
                 self._edge_handles.artists[i * 2 + 1].set_color(color[1])
-        if isinstance(colors, tuple):
+        elif isinstance(cols, tuple):
             for i, artist in enumerate(self._edge_handles.artists):
                 if i % 2 == 0:
-                    artist.set_color(colors[0])
+                    artist.set_color(cols[0])
                 else:
-                    artist.set_color(colors[1])
-        elif isinstance(colors, str):
+                    artist.set_color(cols[1])
+        elif isinstance(cols, str):
             for artist in self._edge_handles.artists:
-                artist.set_color(colors)
+                artist.set_color(cols)
         else:
             raise ValueError(
-                f"colors {colors} must be a list of tuples, a tuple or a string"
+                f"colors {cols} must be a list of tuples, a tuple or a string"
             )
-        self._default_colors_handles = colors
+        self._default_colors_handles = cols
         self.update()
 
 
